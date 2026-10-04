@@ -1,6 +1,6 @@
 # P0 — Esqueleto del proyecto
 
-Hereda todo de `instrucciones/CLAUDE.md`. Responsable: Gonzalo. Se hace directo en `main`, antes de
+Hereda todo de `instrucciones/CLAUDE.md`. Se hace directo en `main`, antes de
 abrir las ramas de los demás. NO se implementa lógica.
 
 ## Las tareas (del enunciado, sección 2.3)
@@ -33,7 +33,8 @@ abrir las ramas de los demás. NO se implementa lógica.
 
 ## Entregable
 - Estructura completa en `main`, en uno o varios commits `chore(esqueleto): ...`.
-- Ramas `p1-gonzalo`, `p2-juanmanuel`, `p3-jeronimo` y `p4-raul` creadas desde ese `main`.
+- Una rama por parte (`p1-<integrante>` a `p4-<integrante>`), creadas desde ese `main` una vez asignadas
+  las partes (CLAUDE.md, sección 14).
 - Regla de protección de `main` activa en GitHub (requiere PR).
 
 ## Checklist

@@ -91,3 +91,40 @@ Hereda todo de `instrucciones/CLAUDE.md`.
   posiciones abiertas, con su costo. Implementar como bandera en `config`.
 - PENDIENTE DE CONFIRMAR: ADV para el impacto. Propuesta: media de 20 días del volumen en dólares,
   causal.
+
+## Estado y pendientes (2026-10-04)
+
+### Hecho
+- `src/data.py` completo. La auditoría de los datos reales sale limpia (0 NaN, 0 incoherencias OHLC,
+  0 fechas descartadas; 2,449 días hábiles comunes).
+- `src/backtest.py`: `run_backtest` completo, con las decisiones de CLAUDE.md, sección 5.
+- `tests/test_backtest.py`: prueba 3 (contabilidad), inmutabilidad de argumentos, los 9 golden-file
+  tests y uno extra con costos completos.
+- `tests/test_pipeline.py`: truncamiento con stub local de señales causal. Compara señales, pesos y
+  equity en t: el equity en t solo depende de señales hasta t − 1, así que compararlo solo no detecta
+  una fuga de una barra (verificado con una señal con `shift(-1)` a propósito).
+- `notebooks/analisis_P1.ipynb`: datos, recorrido del motor sobre golden cases y contabilidad sintética.
+
+### PENDIENTE: requiere P2 (`signals.py` y `metrics.py`)
+- [ ] `tests/test_pipeline.py`: sustituir el stub local `causal_signals` por `compute_indicators` →
+      `generate_signals` reales.
+- [ ] Corrida base (tarea 4): valores base de SPEC.md, θ único, sobre train; por activo individual y
+      pesos iguales. Guardar equity, drawdown y operaciones en `results/` (usa `drawdown_series` de P2).
+- [ ] Curva de sensibilidad a costos: correr `cost_sweep` de P2 con la corrida base.
+- [ ] Agregar la corrida base y la curva de costos a `analisis_P1.ipynb`.
+
+### PENDIENTE: requiere P4 (`portfolio.py`)
+- [ ] Confirmar `resize_on_rebalance` (hoy `False`; `run_backtest` lanza error si es `True`).
+- [ ] Verificar `run_backtest` con el panel real de `sleeve_weights` (Σ|w| ≤ 1 en todas las fechas).
+
+### PENDIENTE: requiere P2 y P3 (optimización y régimen)
+- [ ] Acordar con P2 las llaves de la salida de `walk_forward` que usa `stage_final_backtests` en
+      `main.py` ("params_by_regime", "trade_params") y que `trade_params` traiga la columna "regime".
+- [ ] `main.py` de punta a punta conforme se integren los módulos; probar en una copia limpia sin red.
+
+### PENDIENTE: al final (test congelado)
+- [ ] Auditoría de sesgos en `results/auditoria_sesgos.md` con evidencia concreta por renglón
+      (look-ahead, survivorship, overfitting, ejecución optimista, selección de periodo).
+- [ ] Impacto de mercado: modelo de raíz cuadrada sobre las operaciones de test, ADV = media de 20
+      días del volumen en dólares (causal); en bps y como % del retorno.
+- [ ] README completo y hash del commit de la corrida final.

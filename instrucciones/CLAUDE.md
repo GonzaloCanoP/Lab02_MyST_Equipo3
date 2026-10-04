@@ -21,11 +21,14 @@ Nunca resuelvas una decisión abierta en silencio.
 
 | Parte | Integrante | Rama | Archivos propios |
 |---|---|---|---|
-| P0 — Esqueleto | Gonzalo Cano Padilla | `main` (única excepción) | Estructura y stubs |
-| P1 — Datos, motor y auditoría | Gonzalo Cano Padilla | `p1-gonzalo` | `src/data.py`, `src/backtest.py`, `tests/test_backtest.py`, `tests/test_pipeline.py`, `tests/conftest.py`, `main.py`, `README.md`, `requirements.txt`, `.gitignore` |
-| P2 — Señales, métricas y optimización | Juan Manuel Espinosa Cárdenas | `p2-juanmanuel` | `src/signals.py`, `src/metrics.py`, `src/optimize.py`, `tests/test_signals.py`, `tests/test_metrics.py` |
-| P3 — Régimen y visualización | Jerónimo Rojas Alvarado | `p3-jeronimo` | `src/regimes.py`, `src/plots.py`, `tests/test_regimes.py`, sección "Régimen" de `SPEC_portafolio.md` |
-| P4 — Portafolio y Risk Parity | Raúl Zanatta Casas | `p4-raul` | `src/portfolio.py`, `tests/test_portfolio.py`, `notebooks/analysis.ipynb`, sección "Portafolio" de `SPEC_portafolio.md` |
+| P0 — Esqueleto | *[PENDIENTE]* | `main` (única excepción) | Estructura y stubs |
+| P1 — Datos, motor y auditoría | *[PENDIENTE]* | `p1-<integrante>` | `src/data.py`, `src/backtest.py`, `tests/test_backtest.py`, `tests/test_pipeline.py`, `tests/conftest.py`, `notebooks/analisis_P1.ipynb`, `main.py`, `README.md`, `requirements.txt`, `.gitignore` |
+| P2 — Señales, métricas y optimización | *[PENDIENTE]* | `p2-<integrante>` | `src/signals.py`, `src/metrics.py`, `src/optimize.py`, `tests/test_signals.py`, `tests/test_metrics.py` |
+| P3 — Régimen y visualización | *[PENDIENTE]* | `p3-<integrante>` | `src/regimes.py`, `src/plots.py`, `tests/test_regimes.py`, sección "Régimen" de `SPEC_portafolio.md` |
+| P4 — Portafolio y Risk Parity | *[PENDIENTE]* | `p4-<integrante>` | `src/portfolio.py`, `tests/test_portfolio.py`, `notebooks/analysis.ipynb`, sección "Portafolio" de `SPEC_portafolio.md` |
+
+Integrantes: Gonzalo Cano Padilla, Juan Manuel Espinosa Cárdenas, Jerónimo Rojas Alvarado y Raúl
+Zanatta Casas. La asignación de partes está PENDIENTE (sección 14).
 
 Cada integrante aporta 2 de los 8 activos y escribe en el reporte la descripción de la estrategia de
 sus 2 activos.
@@ -55,7 +58,8 @@ Lab02_MyST_Equipo3/
 │   ├── conftest.py             # fixtures sintéticos compartidos
 │   └── test_*.py
 ├── notebooks/
-│   └── analysis.ipynb
+│   ├── analysis.ipynb          # análisis del portafolio (P4)
+│   └── analisis_P1.ipynb       # datos, motor y pruebas de P1
 ├── results/                    # salidas de main.py — en .gitignore
 └── docs/
     ├── figuras/                # PNG generados por main.py
@@ -115,8 +119,12 @@ Las reglas de trading están en SPEC.md, puntos 4 a 7. Aquí solo van detalles d
   compra a P·(1 + 0.0002), venta a P·(1 − 0.0002).
 - Comisión: 0.125% del nocional en cada llenado.
 - Borrow: se devenga cada día sobre el nocional en corto al cierre, con tasa 0.25% / 252.
-- Reversa por señal opuesta: primero se cierra y después se abre el nuevo lado, dimensionado con el
-  equity resultante del cierre.
+- Reversa por señal opuesta: primero se cierra y después se abre el nuevo lado. Como toda entrada, se
+  dimensiona con C = |w_t| · Equity_t al cierre de la barra de la señal (decidido 2026-10-04).
+- Holding máximo: la barra de entrada cuenta como la primera; con m barras cumplidas se sale al Open
+  de la barra m + 1 (decidido 2026-10-04).
+- Gaps: se evalúan desde la barra siguiente a la entrada; en la barra de entrada el Open es el precio
+  de entrada y solo se revisan SL y TP intrabarra.
 - Fin de muestra o de ventana: las posiciones abiertas se valúan a mercado y NO cuentan como
   operación cerrada.
 - Dos registros separados: `fills` (cada ejecución) y `trades` (cada operación cerrada).
@@ -184,6 +192,8 @@ run_backtest(prices: dict, signals: dict[str, pd.DataFrame], sleeve_weights: pd.
     # trade_params: fecha × {k_stop, reward_ratio, max_holding, risk_per_trade}, vigentes al cierre
     #   de cada fecha.
     # entry_mask: True donde se permite abrir (optimización por régimen y embargo).
+    # trade_params puede traer la columna opcional "regime" (régimen vigente en la fecha); si existe,
+    #   se copia a trades.regime_at_entry; si no, queda NaN (decidido 2026-10-04).
 
 # ---------- src/metrics.py (P2)
 compute_metrics(equity: pd.Series, trades: pd.DataFrame,
@@ -331,3 +341,4 @@ integrante.
 2. ~~Versión de Python, que se fija en P0.~~ RESUELTO: Python 3.13.9 (venv en `.venv/`).
 3. Todo lo marcado como pendiente en `SPEC_portafolio.md`, que P3 y P4 completan como primera tarea.
 4. Si el rebalanceo redimensiona posiciones abiertas (`resize_on_rebalance`). Lo deciden P4 y P1.
+5. Asignación de cada parte (P0 a P4) a un integrante y nombre de las ramas.

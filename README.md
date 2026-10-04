@@ -4,12 +4,12 @@ Microestructuras y Sistemas de Trading (IT1731B) · ITESO, Otoño 2026
 
 ## Integrantes
 
-| Integrante | Parte |
-|---|---|
-| Gonzalo Cano Padilla | P1 — Datos, motor de backtesting y auditoría |
-| Juan Manuel Espinosa Cárdenas | P2 — Señales, métricas y optimización |
-| Jerónimo Rojas Alvarado | P3 — Régimen de mercado y visualización |
-| Raúl Zanatta Casas | P4 — Portafolio y Risk Parity |
+- Gonzalo Cano Padilla
+- Juan Manuel Espinosa Cárdenas
+- Jerónimo Rojas Alvarado
+- Raúl Zanatta Casas
+
+*[Pendiente: asignación de partes P1 a P4.]*
 
 **Nivel de alcance:** C
 
