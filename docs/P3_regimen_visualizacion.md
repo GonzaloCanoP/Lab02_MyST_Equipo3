@@ -1,6 +1,6 @@
 # P3 — Régimen de mercado y visualización
 
-Hereda todo de `instrucciones/CLAUDE.md`. Responsable: Jerónimo · Rama `p3-jeronimo`.
+Hereda todo de `instrucciones/CLAUDE.md`. 
 
 Fuentes: actividad "Market Regime Detection" del curso y sección 3.4 del enunciado del Lab 02. Su
 contenido está transcrito abajo; no hace falta consultar los originales.

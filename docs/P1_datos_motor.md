@@ -1,6 +1,6 @@
 # P1 — Datos, motor de backtesting y auditoría de sesgos
 
-Hereda todo de `instrucciones/CLAUDE.md`. Responsable: Gonzalo · Rama `p1-gonzalo`.
+Hereda todo de `instrucciones/CLAUDE.md`. 
 
 ## Las tareas
 

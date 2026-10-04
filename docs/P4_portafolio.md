@@ -1,6 +1,6 @@
 # P4 — Portafolio y Risk Parity
 
-Hereda todo de `instrucciones/CLAUDE.md`. Responsable: Raúl · Rama `p4-raul`.
+Hereda todo de `instrucciones/CLAUDE.md`.
 
 Fuente: "Fundamentos Matemáticos de Risk Parity — De Rp al Rebalanceo" (Prof. Luis Alvarado, ITESO,
 Otoño 2026). Su contenido está transcrito abajo como contexto; no hace falta consultar el original.

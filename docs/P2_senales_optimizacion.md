@@ -1,6 +1,6 @@
 # P2 — Señales, métricas y optimización
 
-Hereda todo de `instrucciones/CLAUDE.md`. Responsable: Juan Manuel · Rama `p2-juanmanuel`.
+Hereda todo de `instrucciones/CLAUDE.md`.
 
 ## Las tareas
 
