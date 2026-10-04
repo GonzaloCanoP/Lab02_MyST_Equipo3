@@ -29,7 +29,7 @@ abrir las ramas de los demás. NO se implementa lógica.
 - `requirements.txt`: numpy, pandas, yfinance, scipy, scikit-learn, hmmlearn, optuna, matplotlib,
   joblib, pytest, jupyter, con versiones fijas tomadas de `pip freeze`.
 - `.claude/CLAUDE.md` con una sola línea: `@../instrucciones/CLAUDE.md`.
-- PENDIENTE DE CONFIRMAR: versión de Python. Preguntar antes de escribir el README.
+- Versión de Python: 3.13.9 (confirmada).
 
 ## Entregable
 - Estructura completa en `main`, en uno o varios commits `chore(esqueleto): ...`.

@@ -327,6 +327,6 @@ integrante.
 ## 14. PENDIENTE DE CONFIRMAR
 
 1. Los 8 tickers (2 por integrante) y el formato de los archivos en `data/`.
-2. Versión de Python, que se fija en P0.
+2. ~~Versión de Python, que se fija en P0.~~ RESUELTO: Python 3.13.9 (venv en `.venv/`).
 3. Todo lo marcado como pendiente en `SPEC_portafolio.md`, que P3 y P4 completan como primera tarea.
 4. Si el rebalanceo redimensiona posiciones abiertas (`resize_on_rebalance`). Lo deciden P4 y P1.

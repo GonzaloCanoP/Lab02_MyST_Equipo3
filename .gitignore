@@ -1,1 +1,21 @@
-.claude
+# Salidas de main.py (se regeneran con `python main.py`)
+results/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Entorno virtual
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Sistema operativo / editores
+.DS_Store
+.vscode/
+.idea/
+
+# Claude Code: se versiona .claude/CLAUDE.md; la configuración local es personal
+.claude/settings.local.json
