@@ -77,8 +77,9 @@ acuerdo del equipo.
 - Columnas en minúsculas: `open, high, low, close, volume`. `DatetimeIndex` diario, común a los 8
   activos (intersección de fechas; las fechas descartadas se reportan en la auditoría).
 - Prohibido rellenar (`ffill`, `bfill`, interpolar) en silencio. Todo hueco se reporta en `audit_prices`.
-- PENDIENTE DE CONFIRMAR: nombre y formato exactos de los archivos en `data/` (CSV o parquet). Antes de
-  implementar `load_prices`, listar `data/` y confirmar.
+- Formato: un CSV por activo, `data/<TICKER>.csv` (por ejemplo `data/AAPL.csv`), con columna `date`
+  como índice y `open, high, low, close, volume`. `^IRX` se guarda como `data/IRX.csv` (sin `^`).
+- Tickers: AAPL, MSFT, META, AMD, XOM, SMH, GLD, COPX (SPEC.md, punto 1).
 
 ## 4. Causalidad — reglas CRÍTICAS
 
@@ -326,7 +327,7 @@ integrante.
 
 ## 14. PENDIENTE DE CONFIRMAR
 
-1. Los 8 tickers (2 por integrante) y el formato de los archivos en `data/`.
+1. ~~Los 8 tickers y el formato de `data/`~~ RESUELTO (sección 3). Falta el reparto de 2 por integrante.
 2. ~~Versión de Python, que se fija en P0.~~ RESUELTO: Python 3.13.9 (venv en `.venv/`).
 3. Todo lo marcado como pendiente en `SPEC_portafolio.md`, que P3 y P4 completan como primera tarea.
 4. Si el rebalanceo redimensiona posiciones abiertas (`resize_on_rebalance`). Lo deciden P4 y P1.

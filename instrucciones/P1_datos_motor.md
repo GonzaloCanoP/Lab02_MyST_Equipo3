@@ -32,8 +32,7 @@ Hereda todo de `instrucciones/CLAUDE.md`.
     de ejecución. Su reporte debe señalar esta limitación de manera explícita y estimar su magnitud."
 
 ## Cómo encaja
-- `data.py`: los datos del portafolio ya están en `data/`. Antes de implementar, listar la carpeta y
-  confirmar nombres y formato (CLAUDE.md, sección 3). `load_risk_free` convierte `^IRX` (rendimiento
+- `data.py`: los datos del portafolio están en `data/` con el formato de CLAUDE.md, sección 3. `load_risk_free` convierte `^IRX` (rendimiento
   anual en porcentaje) a tasa diaria decimal: ÷ 100 ÷ 252.
 - `backtest.py`: `run_backtest` implementa SPEC.md, puntos 4 a 7, con las convenciones de CLAUDE.md,
   sección 5. Tamaño: `shares = ρ · C_i / |E − SL|`, con `C_i = sleeve_weights[i] · Equity` y tope

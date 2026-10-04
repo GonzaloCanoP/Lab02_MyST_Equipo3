@@ -1,15 +1,32 @@
-# SPEC — Lab 02 · Equipo 3 · Nivel C (acciones diarias)
+# SPEC — Lab 02 · Equipo 3 · Nivel C (acciones y ETFs diarios)
 
-**Versión:** 1.1 · **Estado:** borrador previo al backtest
+**Versión:** 1.2 · **Estado:** borrador previo al backtest
 
-Estrategia direccional larga y corta, aplicada con las mismas reglas a 8 acciones. Risk Parity asigna
+Estrategia direccional larga y corta, aplicada con las mismas reglas a 8 activos. Risk Parity asigna
 el capital por activo y fixed fractional dimensiona cada operación. Este documento se versiona ANTES
 de correr cualquier backtest; train, validation y test no se han observado. El detalle de régimen,
 agregación y rebalanceo va en `SPEC_portafolio.md`.
 
 ## 1. Universe and frequency
-- **Activos:** 8 acciones líquidas de EE.UU. (2 por integrante), listadas antes de 2016 y con historia
-  completa y traslapada. Datos en `data/`. *[Lista por definir.]*
+- **Activos:** 8 activos líquidos de EE.UU. (2 por integrante), listados antes de 2016 y con historia
+  completa y traslapada. Datos en `data/`.
+
+| Ticker | Activo | Tipo | Cotiza desde |
+|---|---|---|---|
+| AAPL | Apple | Acción | 1980 |
+| MSFT | Microsoft | Acción | 1986 |
+| META | Meta Platforms | Acción | 2012 |
+| AMD | Advanced Micro Devices | Acción | 1972 |
+| XOM | Exxon Mobil | Acción | 1970 |
+| SMH | VanEck Semiconductor ETF | ETF | 2000 |
+| GLD | SPDR Gold Shares | ETF | 2004 |
+| COPX | Global X Copper Miners ETF | ETF | 2010 |
+
+  Reparto por integrante: *[PENDIENTE]*. Tasa libre de riesgo: `^IRX` (T-Bill a 13 semanas).
+  Sesgo de supervivencia: la lista se eligió en 2026 entre activos que sobrevivieron hasta hoy; se
+  declara en el reporte. Concentración declarada: AAPL, MSFT, META, AMD y SMH son tecnología
+  (SMH contiene a AMD), así que se espera correlación alta entre ellos; Risk Parity la penaliza.
+  COPX es el menos líquido del universo: el slippage de 2 bps puede subestimar su costo real.
 - **Barras:** diarias OHLCV, ajustadas por splits y dividendos (`auto_adjust=True`).
 - **Rango:** 2017-01-02 → 2026-09-30. El año 2017 es solo calentamiento: no genera señales.
   Quedan 8.75 años operables, por encima del mínimo de 6 que pide el lab.
@@ -151,7 +168,7 @@ operaciones por mes y salidas por motivo (señal, stop, take-profit, holding má
 ## 9. Pendientes de calibrar con train
 | Punto | Qué se mide | Criterio |
 |---|---|---|
-| Lista de activos | Liquidez, historia desde 2016, correlación entre ellos | Completar el punto 1 y declarar el sesgo de supervivencia de la selección |
+| ~~Lista de activos~~ | RESUELTO en v1.2 (punto 1) | Correlación entre ellos se mide en train y se reporta |
 | Actividad mínima (punto 7) | Operaciones por ventana con los valores base | Si salen muchas menos de 24, bajar a una cada tres meses (16) |
 | Redundancia SMA–MACD (punto 2) | Correlación de los votos | Si pasa de ~0.7, cambiar MACD por un indicador de volumen |
 | Break-even (punto 8) | ATR/P medio en train | Recalcular p* ilustrativo |
@@ -163,3 +180,4 @@ Toda calibración usa solo train y se registra abajo antes de correr validation.
 |---|---|---|---|
 | 1.0 | 2026-10-04 | Primera versión, combinación de los cuatro specs del equipo | — (previo al backtest) |
 | 1.1 | 2026-10-04 | Compuerta y fuerza según el material de Risk Parity del curso (|Σx| ≥ 2, s = Σx/3); C_i a partir de w^target; valores base; variante anchored; purga y embargo; θ único de referencia | Alinear con los materiales del profe, previo al backtest |
+| 1.2 | 2026-10-04 | Lista de los 8 activos (acciones y ETFs) | Definida por el equipo antes de descargar datos |
