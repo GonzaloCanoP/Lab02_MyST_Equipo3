@@ -78,7 +78,9 @@ semilla `SEED + i`. No se usa `np.random.seed` global.
 
 ### Jerónimo Rojas Alvarado
 
-*[Pendiente]*
+- P2, señales: Se utilizó ChatGPT como apoyo para revisar las especificaciones,
+  estructurar las funciones de indicadores y diseñar las pruebas de causalidad
+  y confirmación. El código fue revisado y ejecutado localmente antes del commit.
 
 ### Raúl Zanatta Casas
 

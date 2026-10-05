@@ -1,47 +1,222 @@
 """Indicadores técnicos, votos y señal confirmada 2 de 3 (P2).
 
-Todo lo calculado en t usa información hasta el cierre de t; aquí no se hace `shift` para simular
-ejecución (CLAUDE.md, sección 4).
+Todo lo calculado en t usa información disponible hasta el cierre de t.
+La ejecución t -> t+1 ocurre únicamente dentro de run_backtest.
 """
 
+import numpy as np
 import pandas as pd
 
 
-def compute_indicators(ohlcv: pd.DataFrame, params: dict, config: dict) -> pd.DataFrame:
-    """Calcula SMA rápida y lenta, histograma MACD, RSI de Wilder y ATR de Wilder.
-
-    SPEC punto 2. MACD 12/26/9 y ATR 14 vienen de `config`; f, s y n vienen de `params`.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columnas: sma_fast, sma_slow, macd_hist, rsi, atr. NaN mientras no hay historia suficiente.
-    """
-    raise NotImplementedError
+def _wilder_average(series: pd.Series, window: int) -> pd.Series:
+    """Promedio suavizado de Wilder usando una EWM causal."""
+    return series.ewm(
+        alpha=1 / window,
+        adjust=False,
+        min_periods=window,
+    ).mean()
 
 
-def indicator_votes(indicators: pd.DataFrame, params: dict) -> pd.DataFrame:
-    """Convierte los indicadores en votos x_j ∈ {−1, 0, +1}.
+def compute_indicators(
+    ohlcv: pd.DataFrame,
+    params: dict,
+    config: dict,
+) -> pd.DataFrame:
+    """Calcula SMA, MACD, RSI de Wilder y ATR de Wilder."""
 
-    SPEC punto 2: x_sma = sgn(SMA_f − SMA_s); x_macd = sgn(MACD − señal); RSI vota +1 si
-    50 < RSI < hi, −1 si lo < RSI ≤ 50 y 0 en otro caso. Sin historia suficiente, el voto es 0.
+    close = ohlcv["close"]
+    high = ohlcv["high"]
+    low = ohlcv["low"]
 
-    Returns
-    -------
-    pd.DataFrame
-        Columnas: v_sma, v_macd, v_rsi.
-    """
-    raise NotImplementedError
+    sma_fast = close.rolling(
+        window=params["sma_fast"],
+        min_periods=params["sma_fast"],
+    ).mean()
+
+    sma_slow = close.rolling(
+        window=params["sma_slow"],
+        min_periods=params["sma_slow"],
+    ).mean()
+
+    ema_fast = close.ewm(
+        span=config["macd_fast"],
+        adjust=False,
+        min_periods=config["macd_fast"],
+    ).mean()
+
+    ema_slow = close.ewm(
+        span=config["macd_slow"],
+        adjust=False,
+        min_periods=config["macd_slow"],
+    ).mean()
+
+    macd = ema_fast - ema_slow
+
+    macd_signal = macd.ewm(
+        span=config["macd_signal"],
+        adjust=False,
+        min_periods=config["macd_signal"],
+    ).mean()
+
+    macd_hist = macd - macd_signal
+
+    delta = close.diff()
+
+    gains = delta.clip(lower=0)
+    losses = -delta.clip(upper=0)
+
+    avg_gain = _wilder_average(
+        gains,
+        params["rsi_window"],
+    )
+
+    avg_loss = _wilder_average(
+        losses,
+        params["rsi_window"],
+    )
+
+    rs = avg_gain / avg_loss
+
+    rsi = 100 - (
+        100 / (1 + rs)
+    )
+
+    previous_close = close.shift(1)
+
+    true_range = pd.concat(
+        [
+            high - low,
+            (high - previous_close).abs(),
+            (low - previous_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+    atr = _wilder_average(
+        true_range,
+        config["atr_window"],
+    )
+
+    return pd.DataFrame(
+        {
+            "sma_fast": sma_fast,
+            "sma_slow": sma_slow,
+            "macd_hist": macd_hist,
+            "rsi": rsi,
+            "atr": atr,
+        },
+        index=ohlcv.index,
+    )
 
 
-def confirm_signal(votes: pd.DataFrame, min_agree: int = 2) -> pd.Series:
-    """Estado_t = sgn(Σx) si |Σx| ≥ min_agree; 0 en otro caso (SPEC punto 3, compuerta)."""
-    raise NotImplementedError
+def indicator_votes(
+    indicators: pd.DataFrame,
+    params: dict,
+) -> pd.DataFrame:
+    """Convierte SMA, MACD y RSI en votos -1, 0 o +1."""
+
+    index = indicators.index
+
+    sma_difference = (
+        indicators["sma_fast"]
+        - indicators["sma_slow"]
+    )
+
+    v_sma = np.sign(
+        sma_difference
+    ).fillna(0).astype(int)
+
+    v_macd = np.sign(
+        indicators["macd_hist"]
+    ).fillna(0).astype(int)
+
+    rsi = indicators["rsi"]
+
+    v_rsi = pd.Series(
+        0,
+        index=index,
+        dtype=int,
+    )
+
+    long_mask = (
+        (rsi > 50)
+        & (rsi < params["rsi_hi"])
+    )
+
+    short_mask = (
+        (rsi > params["rsi_lo"])
+        & (rsi <= 50)
+    )
+
+    v_rsi.loc[long_mask] = 1
+    v_rsi.loc[short_mask] = -1
+
+    return pd.DataFrame(
+        {
+            "v_sma": v_sma,
+            "v_macd": v_macd,
+            "v_rsi": v_rsi,
+        },
+        index=index,
+    )
 
 
-def signal_strength(votes: pd.DataFrame, min_agree: int = 2) -> pd.Series:
-    """s_t = Σx / 3 si |Σx| ≥ min_agree; 0 en otro caso (SPEC punto 3, fuerza)."""
-    raise NotImplementedError
+def confirm_signal(
+    votes: pd.DataFrame,
+    min_agree: int = 2,
+) -> pd.Series:
+    """Estado = signo de la suma si hay confirmación suficiente."""
+
+    vote_sum = votes[
+        ["v_sma", "v_macd", "v_rsi"]
+    ].sum(axis=1)
+
+    state = pd.Series(
+        0,
+        index=votes.index,
+        dtype=int,
+        name="state",
+    )
+
+    confirmed = (
+        vote_sum.abs()
+        >= min_agree
+    )
+
+    state.loc[confirmed] = np.sign(
+        vote_sum.loc[confirmed]
+    ).astype(int)
+
+    return state
+
+
+def signal_strength(
+    votes: pd.DataFrame,
+    min_agree: int = 2,
+) -> pd.Series:
+    """Fuerza = suma de votos / 3 si se cumple la compuerta."""
+
+    vote_sum = votes[
+        ["v_sma", "v_macd", "v_rsi"]
+    ].sum(axis=1)
+
+    strength = pd.Series(
+        0.0,
+        index=votes.index,
+        name="strength",
+    )
+
+    confirmed = (
+        vote_sum.abs()
+        >= min_agree
+    )
+
+    strength.loc[confirmed] = (
+        vote_sum.loc[confirmed]
+        / 3
+    )
+
+    return strength
 
 
 def generate_signals(
@@ -50,14 +225,123 @@ def generate_signals(
     regimes: pd.Series,
     config: dict,
 ) -> dict[str, pd.DataFrame]:
-    """Genera los paneles de señal para todos los activos.
+    """Genera estado, fuerza y ATR para todos los activos."""
 
-    En cada fecha usa los parámetros del régimen vigente. Para un θ único, `params_by_regime`
-    lleva el mismo dict en las tres llaves.
+    tickers = list(prices)
 
-    Returns
-    -------
-    dict[str, pd.DataFrame]
-        {"state", "strength", "atr"}: paneles fecha × ticker.
-    """
-    raise NotImplementedError
+    if not tickers:
+        raise ValueError(
+            "prices no puede estar vacío."
+        )
+
+    dates = prices[
+        tickers[0]
+    ].index
+
+    regimes = regimes.reindex(
+        dates
+    )
+
+    state = pd.DataFrame(
+        0,
+        index=dates,
+        columns=tickers,
+        dtype=int,
+    )
+
+    strength = pd.DataFrame(
+        0.0,
+        index=dates,
+        columns=tickers,
+    )
+
+    atr = pd.DataFrame(
+        np.nan,
+        index=dates,
+        columns=tickers,
+    )
+
+    used_regimes = set(
+        regimes.dropna().unique()
+    )
+
+    missing = (
+        used_regimes
+        - set(params_by_regime)
+    )
+
+    if missing:
+        raise ValueError(
+            "Faltan parámetros para "
+            f"los regímenes: {sorted(missing)}"
+        )
+
+    for ticker in tickers:
+
+        price_data = prices[ticker]
+
+        for regime_name in used_regimes:
+
+            params = params_by_regime[
+                regime_name
+            ]
+
+            indicators = (
+                compute_indicators(
+                    price_data,
+                    params,
+                    config,
+                )
+            )
+
+            votes = indicator_votes(
+                indicators,
+                params,
+            )
+
+            ticker_state = (
+                confirm_signal(
+                    votes,
+                    config["min_agree"],
+                )
+            )
+
+            ticker_strength = (
+                signal_strength(
+                    votes,
+                    config["min_agree"],
+                )
+            )
+
+            mask = (
+                regimes
+                == regime_name
+            )
+
+            state.loc[
+                mask,
+                ticker,
+            ] = ticker_state.loc[
+                mask
+            ]
+
+            strength.loc[
+                mask,
+                ticker,
+            ] = ticker_strength.loc[
+                mask
+            ]
+
+            atr.loc[
+                mask,
+                ticker,
+            ] = indicators.loc[
+                mask,
+                "atr",
+            ]
+
+    return {
+        "state": state,
+        "strength": strength,
+        "atr": atr,
+    }
