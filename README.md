@@ -74,7 +74,20 @@ semilla `SEED + i`. No se usa `np.random.seed` global.
 
 ### Juan Manuel Espinosa Cárdenas
 
-*[Pendiente]*
+- P3, régimen y visualización: con asistencia de Claude Code (Anthropic) se revisaron las
+  instrucciones y las ramas del equipo, se redactó la sección "Régimen" de `SPEC_portafolio.md` y se
+  implementaron `src/regimes.py`, `src/plots.py`, `tests/test_regimes.py` y `tests/test_plots.py`.
+- Las decisiones de diseño (serie de mercado, variables, regla de elección del método, esquema de
+  ajuste y regla de nombres) se discutieron y aprobaron antes de implementarlas; la regla de
+  elección se fijó antes de ver resultados de validation y el método (reglas) salió de aplicarla.
+- La IA detectó y documentó en el SPEC que el HMM con un solo inicio caía en un óptimo local
+  degenerado, y se corrigió con reinicios. También corrigió en el SPEC una expectativa propia que los
+  datos no confirmaron (el % de crisis en validation no baja con el reajuste mensual).
+- Verificación: la recursión forward se validó contra hmmlearn en el último día de cada muestra, y se
+  comprobó que las pruebas de truncamiento fallan si se introduce una fuga a propósito.
+- Correcciones en `main` antes de P3 (llaves de régimen en `CONFIG`, docstring de
+  `test_pipeline.py`, prueba de régimen NaN en `test_signals.py` y contrato de `regime_validation`),
+  hechas con asistencia de Claude Code y avisadas al equipo.
 
 ### Jerónimo Rojas Alvarado
 
