@@ -701,6 +701,94 @@ def sensitivity(
 
     return pd.DataFrame(rows)
 
+def _breakeven_cost_bps(
+    cost_curve: pd.DataFrame,
+) -> float:
+    """Estima el costo de equilibrio donde el retorno neto llega a cero.
+
+    Si el cruce ocurre entre dos niveles evaluados, se usa
+    interpolación lineal entre ambos puntos.
+    """
+    net_return = (
+        cost_curve["net_return"]
+        .dropna()
+        .sort_index()
+    )
+
+    if net_return.empty:
+        return np.nan
+
+    values = net_return.to_numpy(
+        dtype=float
+    )
+
+    costs = net_return.index.to_numpy(
+        dtype=float
+    )
+
+    zero_mask = np.isclose(
+        values,
+        0.0,
+        atol=1e-12,
+    )
+
+    if zero_mask.any():
+        first_zero = np.flatnonzero(
+            zero_mask
+        )[0]
+
+        return float(
+            costs[first_zero]
+        )
+
+    if values[0] < 0:
+        return 0.0
+
+    for position in range(
+        1,
+        len(values),
+    ):
+        previous_return = values[
+            position - 1
+        ]
+
+        current_return = values[
+            position
+        ]
+
+        if (
+            previous_return > 0
+            and current_return < 0
+        ):
+            previous_cost = costs[
+                position - 1
+            ]
+
+            current_cost = costs[
+                position
+            ]
+
+            crossing = (
+                previous_cost
+                + (
+                    -previous_return
+                    * (
+                        current_cost
+                        - previous_cost
+                    )
+                    / (
+                        current_return
+                        - previous_return
+                    )
+                )
+            )
+
+            return float(
+                crossing
+            )
+
+    return np.nan
+
 def cost_sweep(
     params_by_regime: dict,
     prices: dict,
@@ -708,8 +796,188 @@ def cost_sweep(
     config: dict,
     round_trip_bps: list[float],
 ) -> pd.DataFrame:
-    """Retorno neto contra costo de ida y vuelta; identifica el punto de equilibrio."""
-    raise NotImplementedError
+    """Evalúa la estrategia frente a distintos costos de transacción.
+
+    El barrido usa costo total de ida y vuelta en basis points.
+    Comisión y slippage se escalan manteniendo la proporción del
+    caso base. Así, 29 bps reproduce exactamente la estructura de
+    costos definida en CONFIG.
+
+    Parameters
+    ----------
+    params_by_regime : dict
+        Parámetros congelados por régimen.
+    prices : dict
+        Datos OHLCV por activo.
+    regimes : pd.Series
+        Régimen causal por fecha.
+    config : dict
+        Configuración del proyecto.
+    round_trip_bps : list[float]
+        Costos totales de ida y vuelta a evaluar.
+
+    Returns
+    -------
+    pd.DataFrame
+        Retorno neto anualizado, Calmar y número de trades por
+        nivel de costo, junto con el break-even y el margen frente
+        al costo base.
+    """
+    if not round_trip_bps:
+        raise ValueError(
+            "round_trip_bps no puede estar vacío."
+        )
+
+    costs = sorted(
+        {
+            float(value)
+            for value
+            in round_trip_bps
+        }
+    )
+
+    if any(
+        (
+            not np.isfinite(value)
+            or value < 0
+        )
+        for value in costs
+    ):
+        raise ValueError(
+            "Los costos deben ser finitos y no negativos."
+        )
+
+    base_commission = float(
+        config["commission"]
+    )
+
+    base_slippage = float(
+        config["slippage"]
+    )
+
+    base_per_side = (
+        base_commission
+        + base_slippage
+    )
+
+    base_round_trip_bps = (
+        2.0
+        * base_per_side
+        * 10_000.0
+    )
+
+    rows = []
+
+    for cost_bps in costs:
+        candidate_config = dict(
+            config
+        )
+
+        target_per_side = (
+            cost_bps
+            / 20_000.0
+        )
+
+        if base_per_side > 0:
+            scale = (
+                target_per_side
+                / base_per_side
+            )
+
+            candidate_config[
+                "commission"
+            ] = (
+                base_commission
+                * scale
+            )
+
+            candidate_config[
+                "slippage"
+            ] = (
+                base_slippage
+                * scale
+            )
+
+        else:
+            candidate_config[
+                "commission"
+            ] = 0.0
+
+            candidate_config[
+                "slippage"
+            ] = target_per_side
+
+        result, metrics = (
+            _evaluate_params(
+                params_by_regime,
+                prices,
+                regimes,
+                candidate_config,
+            )
+        )
+
+        rows.append(
+            {
+                "round_trip_bps":
+                    cost_bps,
+                "net_return":
+                    metrics[
+                        "ann_return"
+                    ],
+                "calmar":
+                    metrics[
+                        "calmar"
+                    ],
+                "n_trades":
+                    int(
+                        len(
+                            result.trades
+                        )
+                    ),
+            }
+        )
+
+    cost_curve = (
+        pd.DataFrame(rows)
+        .set_index(
+            "round_trip_bps"
+        )
+        .sort_index()
+    )
+
+    cost_curve.index.name = (
+        "round_trip_bps"
+    )
+
+    break_even_bps = (
+        _breakeven_cost_bps(
+            cost_curve
+        )
+    )
+
+    if np.isfinite(
+        break_even_bps
+    ):
+        margin_bps = (
+            break_even_bps
+            - base_round_trip_bps
+        )
+    else:
+        margin_bps = np.nan
+
+    cost_curve[
+        "break_even_bps"
+    ] = break_even_bps
+
+    cost_curve[
+        "base_cost_bps"
+    ] = base_round_trip_bps
+
+    cost_curve[
+        "margin_bps"
+    ] = margin_bps
+
+    return cost_curve
 
 
 def single_indicator_comparison(

@@ -4,6 +4,7 @@ import optuna
 import pytest
 
 from src.optimize import (
+    cost_sweep,
     search_space,
     select_plateau,
     sensitivity,
@@ -391,3 +392,169 @@ def test_single_indicator_comparison(
     ] == pytest.approx(
         0.4
     )
+
+def test_cost_sweep_finds_breakeven(
+    monkeypatch,
+    config_test,
+):
+    class FakeResult:
+        def __init__(self):
+            self.trades = pd.DataFrame(
+                {
+                    "pnl_net": [
+                        1.0,
+                        -1.0,
+                    ]
+                }
+            )
+
+    original_commission = (
+        config_test[
+            "commission"
+        ]
+    )
+
+    original_slippage = (
+        config_test[
+            "slippage"
+        ]
+    )
+
+    def fake_evaluate(
+        params_by_regime,
+        prices,
+        regimes,
+        config,
+        entry_mask=None,
+    ):
+        round_trip = (
+            2.0
+            * (
+                config[
+                    "commission"
+                ]
+                + config[
+                    "slippage"
+                ]
+            )
+            * 10_000.0
+        )
+
+        net_return = (
+            0.05
+            - round_trip
+            / 1000.0
+        )
+
+        return (
+            FakeResult(),
+            {
+                "ann_return":
+                    net_return,
+                "calmar":
+                    1.0,
+            },
+        )
+
+    monkeypatch.setattr(
+        "src.optimize._evaluate_params",
+        fake_evaluate,
+    )
+
+    result = cost_sweep(
+        {
+            "tendencia":
+                config_test[
+                    "base_params"
+                ]
+        },
+        None,
+        None,
+        config_test,
+        [
+            100,
+            0,
+            50,
+            25,
+            75,
+        ],
+    )
+
+    assert list(
+        result.index
+    ) == [
+        0.0,
+        25.0,
+        50.0,
+        75.0,
+        100.0,
+    ]
+
+    assert result.loc[
+        0.0,
+        "net_return",
+    ] == pytest.approx(
+        0.05
+    )
+
+    assert result.loc[
+        50.0,
+        "net_return",
+    ] == pytest.approx(
+        0.0
+    )
+
+    assert result[
+        "break_even_bps"
+    ].iloc[0] == pytest.approx(
+        50.0
+    )
+
+    assert result[
+        "base_cost_bps"
+    ].iloc[0] == pytest.approx(
+        29.0
+    )
+
+    assert result[
+        "margin_bps"
+    ].iloc[0] == pytest.approx(
+        21.0
+    )
+
+    assert (
+        config_test[
+            "commission"
+        ]
+        == original_commission
+    )
+
+    assert (
+        config_test[
+            "slippage"
+        ]
+        == original_slippage
+    )
+
+def test_cost_sweep_rejects_negative_cost(
+    config_test,
+):
+    with pytest.raises(
+        ValueError
+    ):
+        cost_sweep(
+            {
+                "tendencia":
+                    config_test[
+                        "base_params"
+                    ]
+            },
+            None,
+            None,
+            config_test,
+            [
+                0,
+                -5,
+                10,
+            ],
+        )
