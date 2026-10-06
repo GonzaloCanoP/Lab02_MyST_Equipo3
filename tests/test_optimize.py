@@ -5,12 +5,12 @@ import pytest
 
 from src.optimize import (
     cost_sweep,
+    diagnostic_study,
     search_space,
     select_plateau,
     sensitivity,
     single_indicator_comparison,
 )
-
 
 def test_search_space_matches_config(
     config_test,
@@ -558,3 +558,213 @@ def test_cost_sweep_rejects_negative_cost(
                 10,
             ],
         )
+
+def _diagnostic_prices():
+    """Precios mínimos para probar la lógica del estudio sin correr backtests reales."""
+    index = pd.bdate_range(
+        "2019-12-02",
+        "2020-07-31",
+    )
+
+    return {
+        "AAPL": pd.DataFrame(
+            index=index
+        )
+    }
+
+
+@pytest.mark.parametrize(
+    "sampler_name,sampler_type",
+    [
+        (
+            "random",
+            optuna.samplers.RandomSampler,
+        ),
+        (
+            "tpe",
+            optuna.samplers.TPESampler,
+        ),
+    ],
+)
+def test_diagnostic_study_runs_requested_trials(
+    monkeypatch,
+    config_test,
+    sampler_name,
+    sampler_type,
+):
+    prices = _diagnostic_prices()
+
+    config = dict(
+        config_test
+    )
+
+    config["blocks"] = {
+        "train": (
+            "2020-01-01",
+            "2020-06-30",
+        )
+    }
+
+    config[
+        "embargo_days"
+    ] = 5
+
+    config[
+        "min_trades_per_window"
+    ] = 24
+
+    seen_masks = []
+
+    class FakeResult:
+        def __init__(self):
+            self.trades = pd.DataFrame(
+                index=range(30)
+            )
+
+    def fake_evaluate(
+        params_by_regime,
+        prices,
+        regimes,
+        config,
+        entry_mask=None,
+    ):
+        seen_masks.append(
+            entry_mask.copy()
+        )
+
+        return (
+            FakeResult(),
+            {
+                "calmar": 1.25
+            },
+        )
+
+    monkeypatch.setattr(
+        "src.optimize._evaluate_params",
+        fake_evaluate,
+    )
+
+    study = diagnostic_study(
+        prices,
+        config,
+        sampler=sampler_name,
+        n_trials=3,
+        seed=42,
+    )
+
+    assert isinstance(
+        study.sampler,
+        sampler_type,
+    )
+
+    assert len(
+        study.trials
+    ) == 3
+
+    assert study.user_attrs[
+        "n_trials_requested"
+    ] == 3
+
+    assert study.user_attrs[
+        "n_trials_evaluated"
+    ] == 3
+
+    assert study.user_attrs[
+        "n_trials_feasible"
+    ] == 3
+
+    assert study.user_attrs[
+        "elapsed_seconds"
+    ] >= 0.0
+
+    mask = seen_masks[0]
+
+    train_mask = mask.loc[
+        "2020-01-01":
+        "2020-06-30"
+    ]
+
+    assert train_mask.iloc[
+        :-5
+    ].all()
+
+    assert not train_mask.iloc[
+        -5:
+    ].any()
+
+    assert not mask.loc[
+        :"2019-12-31"
+    ].any()
+
+def test_diagnostic_study_rejects_low_activity(
+    monkeypatch,
+    config_test,
+):
+    prices = _diagnostic_prices()
+
+    config = dict(
+        config_test
+    )
+
+    config["blocks"] = {
+        "train": (
+            "2020-01-01",
+            "2020-06-30",
+        )
+    }
+
+    config[
+        "embargo_days"
+    ] = 5
+
+    config[
+        "min_trades_per_window"
+    ] = 24
+
+    class FakeResult:
+        def __init__(self):
+            self.trades = pd.DataFrame(
+                index=range(23)
+            )
+
+    def fake_evaluate(
+        params_by_regime,
+        prices,
+        regimes,
+        config,
+        entry_mask=None,
+    ):
+        return (
+            FakeResult(),
+            {
+                "calmar": 10.0
+            },
+        )
+
+    monkeypatch.setattr(
+        "src.optimize._evaluate_params",
+        fake_evaluate,
+    )
+
+    study = diagnostic_study(
+        prices,
+        config,
+        sampler="random",
+        n_trials=1,
+        seed=42,
+    )
+
+    trial = study.trials[0]
+
+    assert trial.value == -np.inf
+
+    assert (
+        trial.user_attrs[
+            "feasible"
+        ]
+        is False
+    )
+
+    assert trial.user_attrs[
+        "n_trades"
+    ] == 23

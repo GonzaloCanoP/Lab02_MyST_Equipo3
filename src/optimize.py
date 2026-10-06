@@ -4,6 +4,7 @@ Firmas propuestas: P2 puede ajustarlas avisando a P1 (main.py). CLAUDE.md, secci
 """
 
 import math
+import time
 
 import numpy as np
 import optuna
@@ -353,13 +354,329 @@ def search_space() -> dict:
     """
     return dict(_PARAMETER_KINDS)
 
+def _suggest_params(
+    trial: optuna.Trial,
+    config: dict,
+) -> dict:
+    """Propone los nueve parámetros de P2 usando los rangos de CONFIG."""
+    params = {}
+
+    for name, kind in search_space().items():
+        low, high = config[
+            "search_ranges"
+        ][name]
+
+        if kind == "int":
+            params[name] = (
+                trial.suggest_int(
+                    name,
+                    int(low),
+                    int(high),
+                )
+            )
+        else:
+            params[name] = (
+                trial.suggest_float(
+                    name,
+                    float(low),
+                    float(high),
+                )
+            )
+
+    return params
 
 def diagnostic_study(
-    prices: dict, config: dict, sampler: str, n_trials: int, seed: int
+    prices: dict,
+    config: dict,
+    sampler: str,
+    n_trials: int,
+    seed: int,
 ) -> optuna.Study:
-    """Estudio de diagnóstico sobre todo train con θ único; `sampler` ∈ {"random", "tpe"}."""
-    raise NotImplementedError
+    """Corre el diagnóstico de Optuna sobre Train con un theta único.
 
+    Se puede usar RandomSampler o TPESampler. Cada prueba ejecuta
+    señales -> Risk Parity -> backtest con costos -> Calmar.
+
+    Las configuraciones que no alcanzan la actividad mínima o cuyo
+    Calmar no es finito reciben -inf.
+    """
+    sampler_name = sampler.lower()
+
+    if sampler_name not in {
+        "random",
+        "tpe",
+    }:
+        raise ValueError(
+            "sampler debe ser 'random' o 'tpe'."
+        )
+
+    if n_trials <= 0:
+        raise ValueError(
+            "n_trials debe ser positivo."
+        )
+
+    if not prices:
+        raise ValueError(
+            "prices no puede estar vacío."
+        )
+
+    if sampler_name == "random":
+        optuna_sampler = (
+            optuna.samplers.RandomSampler(
+                seed=seed
+            )
+        )
+    else:
+        optuna_sampler = (
+            optuna.samplers.TPESampler(
+                seed=seed
+            )
+        )
+
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=optuna_sampler,
+    )
+
+    train_start = pd.Timestamp(
+        config["blocks"]["train"][0]
+    )
+    train_end = pd.Timestamp(
+        config["blocks"]["train"][1]
+    )
+
+    window_prices = {
+        ticker: data.loc[
+            :train_end
+        ].copy()
+        for ticker, data
+        in prices.items()
+    }
+
+    first_ticker = next(
+        iter(window_prices)
+    )
+
+    index = window_prices[
+        first_ticker
+    ].index
+
+    train_dates = index[
+        (index >= train_start)
+        & (index <= train_end)
+    ]
+
+    if len(train_dates) == 0:
+        raise ValueError(
+            "No hay observaciones dentro de Train."
+        )
+
+    embargo_days = int(
+        config["embargo_days"]
+    )
+
+    if embargo_days < 0:
+        raise ValueError(
+            "embargo_days no puede ser negativo."
+        )
+
+    if embargo_days >= len(
+        train_dates
+    ):
+        raise ValueError(
+            "El embargo consume toda la ventana de Train."
+        )
+
+    entry_mask = pd.Series(
+        False,
+        index=index,
+        dtype=bool,
+    )
+
+    entry_mask.loc[
+        train_dates
+    ] = True
+
+    if embargo_days > 0:
+        embargo_dates = train_dates[
+            -embargo_days:
+        ]
+
+        entry_mask.loc[
+            embargo_dates
+        ] = False
+
+    # El diagnóstico usa theta único sin diferenciar regímenes.
+    # Se usa el régimen con mayor multiplicador, equivalente al
+    # caso neutral de la corrida base.
+    single_regime = max(
+        config["regime_multiplier"],
+        key=config[
+            "regime_multiplier"
+        ].get,
+    )
+
+    regime_labels = pd.Series(
+        single_regime,
+        index=index,
+        name="regime",
+    )
+
+    minimum_trades = int(
+        config[
+            "min_trades_per_window"
+        ]
+    )
+
+    def objective(
+        trial: optuna.Trial,
+    ) -> float:
+        params = _suggest_params(
+            trial,
+            config,
+        )
+
+        params_by_regime = {
+            single_regime: params
+        }
+
+        result, metrics = (
+            _evaluate_params(
+                params_by_regime,
+                window_prices,
+                regime_labels,
+                config,
+                entry_mask=entry_mask,
+            )
+        )
+
+        n_trades = int(
+            len(result.trades)
+        )
+
+        trial.set_user_attr(
+            "n_trades",
+            n_trades,
+        )
+
+        trial.set_user_attr(
+            "minimum_trades",
+            minimum_trades,
+        )
+
+        if n_trades < minimum_trades:
+            trial.set_user_attr(
+                "feasible",
+                False,
+            )
+
+            return -np.inf
+
+        calmar = float(
+            metrics["calmar"]
+        )
+
+        if not np.isfinite(
+            calmar
+        ):
+            trial.set_user_attr(
+                "feasible",
+                False,
+            )
+
+            return -np.inf
+
+        trial.set_user_attr(
+            "feasible",
+            True,
+        )
+
+        trial.set_user_attr(
+            "calmar",
+            calmar,
+        )
+
+        return calmar
+
+    start_time = (
+        time.perf_counter()
+    )
+
+    study.optimize(
+        objective,
+        n_trials=n_trials,
+        n_jobs=1,
+    )
+
+    elapsed_seconds = (
+        time.perf_counter()
+        - start_time
+    )
+
+    feasible_trials = [
+        trial
+        for trial in study.trials
+        if (
+            trial.state
+            == optuna.trial.TrialState.COMPLETE
+            and trial.value is not None
+            and np.isfinite(
+                trial.value
+            )
+        )
+    ]
+
+    study.set_user_attr(
+        "sampler",
+        sampler_name,
+    )
+
+    study.set_user_attr(
+        "seed",
+        int(seed),
+    )
+
+    study.set_user_attr(
+        "n_trials_requested",
+        int(n_trials),
+    )
+
+    study.set_user_attr(
+        "n_trials_evaluated",
+        len(study.trials),
+    )
+
+    study.set_user_attr(
+        "n_trials_feasible",
+        len(feasible_trials),
+    )
+
+    study.set_user_attr(
+        "elapsed_seconds",
+        float(elapsed_seconds),
+    )
+
+    study.set_user_attr(
+        "train_start",
+        str(train_start.date()),
+    )
+
+    study.set_user_attr(
+        "train_end",
+        str(train_end.date()),
+    )
+
+    study.set_user_attr(
+        "embargo_days",
+        embargo_days,
+    )
+
+    study.set_user_attr(
+        "minimum_trades",
+        minimum_trades,
+    )
+
+    return study
 
 def select_plateau(
     study: optuna.Study,
@@ -978,7 +1295,6 @@ def cost_sweep(
     ] = margin_bps
 
     return cost_curve
-
 
 def single_indicator_comparison(
     params_by_regime: dict,
