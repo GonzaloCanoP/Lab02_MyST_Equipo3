@@ -281,6 +281,73 @@ def test_label_regimes_nan_until_enough_history(synthetic_prices, features, conf
     assert labels.loc[expected_first:].notna().all()
 
 
+def _synthetic_blocks_config(config: dict) -> dict:
+    """Bloques que caben en los 600 días sintéticos (2018-01 a 2020-04) y HMM rápido."""
+    blocks = {
+        "train": ("2018-01-01", "2019-03-31"),
+        "validation": ("2019-04-01", "2019-12-31"),
+        "test": ("2020-01-01", "2020-12-31"),
+    }
+    return dict(config, blocks=blocks, regime_hmm_n_init=2, regime_method="rules")
+
+
+def test_regime_results(synthetic_prices, config_test):
+    """Juntan tabla comparativa, validación por bloque, filtrada contra Viterbi y correlaciones."""
+    config = _synthetic_blocks_config(config_test)
+    labels = regimes.label_regimes(synthetic_prices, config)
+    result = regimes.regime_results(synthetic_prices, labels, config)
+
+    assert set(result["comparison"].index.get_level_values("bloque")) == {"train", "validation"}
+    assert list(result["validation"]["pct_tiempo"].index) == ["train", "validation", "test"]
+    assert 0.0 <= result["hmm_agreement"] <= 1.0
+    assert result["hmm_filtered"].index.equals(result["hmm_viterbi"].index)
+    for corr in result["corr_by_regime"].values():
+        np.testing.assert_allclose(np.diag(corr), 1.0)
+    # La correlación es solo de train: ninguna fecha posterior entra.
+    train_end = pd.Timestamp(config["blocks"]["train"][1])
+    train_labels = labels.loc[:train_end].loc[config["blocks"]["train"][0]:]
+    assert set(result["corr_by_regime"]) == set(train_labels.dropna().unique())
+
+
+def test_regime_performance_by_hand(config_test):
+    """Métricas por régimen contra un cálculo en papel.
+
+    Equity con +1% diario en días de tendencia y −0.5% en días de crisis (alternando bloques de
+    5 días). En los días de tendencia la curva encadenada sube 1% por día, así que su retorno
+    anualizado es 1.01^252 − 1 y su drawdown es 0. Los trades se separan por `regime_at_entry`.
+    """
+    dates = pd.bdate_range("2018-01-01", periods=61)
+    pattern = (["tendencia"] * 5 + ["crisis"] * 5) * 6 + ["tendencia"]
+    labels = pd.Series(pattern, index=dates)
+    daily = np.where(labels == "tendencia", 0.01, -0.005)
+    daily[0] = 0.0
+    equity = pd.Series(1_000_000 * np.cumprod(1 + daily), index=dates)
+    trades = pd.DataFrame(
+        {
+            "entry_date": [dates[2], dates[7], dates[12]],
+            "regime_at_entry": ["tendencia", "crisis", "tendencia"],
+            "pnl_net": [100.0, -50.0, 30.0],
+        }
+    )
+    run = {"oos_equity": equity, "oos_trades": trades}
+    config = dict(config_test, blocks={"train": ("2018-01-01", "2018-12-31")})
+
+    result = regimes.regime_performance({("rolling", True): run}, labels, 0.0, config)
+    row = result["by_regime"].loc[("rolling", "por régimen", "train", "tendencia")]
+
+    assert row["n_days"] == 30  # 31 días de tendencia, menos el primero (sin retorno previo)
+    assert row["ann_return"] == pytest.approx(1.01**252 - 1)
+    assert row["max_drawdown"] == pytest.approx(0.0)
+    assert row["n_trades"] == 2
+    assert row["win_rate"] == pytest.approx(1.0)
+    crisis = result["by_regime"].loc[("rolling", "por régimen", "train", "crisis")]
+    assert crisis["n_days"] == 30
+    assert crisis["ann_return"] == pytest.approx(0.995**252 - 1)
+    assert crisis["n_trades"] == 1
+    total = result["theta_comparison"].loc[("rolling", "por régimen", "train")]
+    assert total["n_trades"] == 3
+
+
 def test_regime_validation_without_blocks_uses_whole_sample(features, config_test):
     """Sin bloques, el % de tiempo se reporta para toda la muestra y suma 100."""
     model = fit_regime_model(features, "rules", 42, config_test)
