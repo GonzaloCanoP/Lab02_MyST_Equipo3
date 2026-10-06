@@ -6,6 +6,7 @@ from src.signals import (
     indicator_votes,
     confirm_signal,
     signal_strength,
+    generate_signals,
 )
 
 
@@ -139,3 +140,53 @@ def test_signal_calculation_is_causal(
             strength.loc[date]
             == full_strength.loc[date]
         )
+
+
+def test_no_signal_without_regime(
+    synthetic_prices,
+    config_test,
+):
+    """Sin etiqueta de régimen (NaN, antes del primer ajuste de P3) no se abre posición."""
+
+    dates = synthetic_prices["A0"].index
+
+    n_missing = 200
+
+    regimes = pd.Series(
+        "tendencia",
+        index=dates,
+        name="regime",
+        dtype=object,
+    )
+
+    regimes.iloc[:n_missing] = np.nan
+
+    params = config_test["base_params"]
+
+    params_by_regime = {
+        "tendencia": params,
+        "reversion": params,
+        "crisis": params,
+    }
+
+    signals = generate_signals(
+        synthetic_prices,
+        params_by_regime,
+        regimes,
+        config_test,
+    )
+
+    missing = dates[:n_missing]
+
+    assert (
+        signals["state"].loc[missing] == 0
+    ).all().all()
+
+    assert (
+        signals["strength"].loc[missing] == 0
+    ).all().all()
+
+    # Con base_params, a partir del día 200 ya hay historia suficiente: debe haber señales.
+    assert (
+        signals["state"].iloc[n_missing:] != 0
+    ).any().any()
