@@ -32,6 +32,14 @@ def label_regimes(prices: dict, config: dict) -> pd.Series:
     raise NotImplementedError
 
 
-def regime_validation(features: pd.DataFrame, labels: pd.Series) -> dict:
-    """Silhouette, duración media, transiciones por mes y % de tiempo por régimen y por bloque."""
+def regime_validation(
+    features: pd.DataFrame,
+    labels: pd.Series,
+    blocks: dict[str, tuple[pd.Timestamp, pd.Timestamp]] | None = None,
+) -> dict:
+    """Silhouette, duración media, transiciones por mes y % de tiempo por régimen y por bloque.
+
+    `blocks` es la salida de `block_dates(config)`; sin él, el % de tiempo se reporta solo para
+    toda la muestra.
+    """
     raise NotImplementedError

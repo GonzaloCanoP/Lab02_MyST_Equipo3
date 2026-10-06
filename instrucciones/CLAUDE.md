@@ -212,8 +212,11 @@ fit_regime_model(features_train: pd.DataFrame, method: str, seed: int) -> object
 predict_regimes(model: object, features: pd.DataFrame) -> pd.Series   # etiqueta FILTRADA
 viterbi_path(model: object, features: pd.DataFrame) -> pd.Series      # SOLO para la figura comparativa
 label_regimes(prices: dict, config: dict) -> pd.Series         # etiqueta causal para todas las fechas
-regime_validation(features: pd.DataFrame, labels: pd.Series) -> dict
+regime_validation(features: pd.DataFrame, labels: pd.Series,
+                  blocks: dict[str, tuple] | None = None) -> dict
     # silhouette, duracion_media, transiciones_por_mes, pct_tiempo por régimen y por bloque
+    # blocks: salida de block_dates(config); sin él, pct_tiempo solo de toda la muestra
+    #   (agregado 2026-10-05: sin las fechas no se puede reportar train/validation/test)
 
 # ---------- src/portfolio.py (P4)
 estimate_cov(returns: pd.DataFrame, method: str) -> pd.DataFrame    # "sample", "ewma", "ledoit_wolf"
