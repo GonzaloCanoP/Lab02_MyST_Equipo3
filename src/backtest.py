@@ -60,8 +60,8 @@ def run_backtest(
 ) -> BacktestResult:
     """Simula la estrategia barra por barra con estado explícito de cash, posiciones y equity.
 
-    SPEC puntos 4 a 7: salidas (SL, TP, señal opuesta, holding máximo, rearme), sizing fixed
-    fractional con tope sin apalancamiento, costos y orden de eventos dentro de la barra t+1.
+    SPEC puntos 4 a 7: salidas (SL, TP, señal opuesta, holding máximo, rearme), sizing por capital
+    asignado sin apalancamiento, costos y orden de eventos dentro de la barra t+1.
     Función pura: no lee archivos, no usa estado global y no modifica sus argumentos.
 
     Parameters
@@ -73,7 +73,7 @@ def run_backtest(
     sleeve_weights : pd.DataFrame
         Panel de |w_target| ≥ 0 con Σ ≤ 1 por fecha. Activo individual: una columna de unos.
     trade_params : pd.DataFrame
-        Fecha × {k_stop, reward_ratio, max_holding, risk_per_trade}, vigentes al cierre de cada fecha.
+        Fecha × {k_stop, reward_ratio, max_holding}, vigentes al cierre de cada fecha.
     config : dict
         `CONFIG` de main.py (capital, comisión, slippage, borrow, resize_on_rebalance).
     entry_mask : pd.Series or None
@@ -89,8 +89,9 @@ def run_backtest(
 
     - La barra t+1 ejecuta la señal de t en este orden: salidas por señal o por holding al Open,
       entradas al Open, gaps contra SL/TP, SL/TP intrabarra con High y Low, valuación al Close.
-    - Toda entrada, incluida la reversa, se dimensiona con C = |w_t| · Equity_t al cierre de la barra
-      de la señal t: acciones = ρ · C / (k · ATR₀), con tope acciones · E · (1 + comisión) ≤ C.
+    - Toda entrada, incluida la reversa, usa todo su capital asignado C = |w_t| · Equity_t al cierre
+      de la barra de la señal t: acciones = C / (E · (1 + comisión)), con E el Open con slippage
+      (SPEC punto 5, v1.4). El stop k · ATR₀ solo fija SL y TP.
     - Holding máximo: la barra de entrada cuenta como la primera; con m barras cumplidas sale al Open
       de la siguiente.
     - Si `trade_params` trae la columna opcional "regime", se copia a `regime_at_entry`.
@@ -116,9 +117,8 @@ def run_backtest(
     k_stop = params["k_stop"].to_numpy(dtype=float)
     reward = params["reward_ratio"].to_numpy(dtype=float)
     max_hold = params["max_holding"].to_numpy(dtype=float)
-    risk = params["risk_per_trade"].to_numpy(dtype=float)
     # Sin parámetros completos en la fecha de la señal no se abre (transparencia de NaN).
-    params_ok = np.isfinite(np.column_stack([k_stop, reward, max_hold, risk])).all(axis=1)
+    params_ok = np.isfinite(np.column_stack([k_stop, reward, max_hold])).all(axis=1)
     regime = params["regime"].to_numpy() if "regime" in params else np.full(n_dates, np.nan)
     if entry_mask is None:
         allowed = np.ones(n_dates, dtype=bool)
@@ -212,7 +212,7 @@ def run_backtest(
                 elif i - pos["entry_idx"] >= pos["max_holding"]:
                     close_position(i, j, opens[i, j], "max_holding")
 
-            # 2. Entradas al Open, dimensionadas con el equity al cierre de la barra de la señal.
+            # 2. Entradas al Open con todo el capital asignado al cierre de la barra de la señal.
             for j in range(n_assets):
                 side = int(state[s, j])
                 capital = sleeve[s, j] * equity[s]
@@ -229,10 +229,8 @@ def run_backtest(
                     continue
                 entry_ref = opens[i, j]
                 entry_est = entry_ref * (1 + side * slippage)
-                n_shares = min(
-                    risk[s] * capital / stop_dist,
-                    capital / (entry_est * (1 + commission)),
-                )
+                # Nocional más comisión igual a C: sin apalancamiento (SPEC punto 5).
+                n_shares = capital / (entry_est * (1 + commission))
                 entry_price = fill(i, j, side * n_shares, entry_ref, "entry")
                 open_pos[j] = {
                     "side": side,

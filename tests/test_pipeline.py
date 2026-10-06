@@ -15,7 +15,6 @@ TRADE_PARAM_KEYS = [
     "k_stop",
     "reward_ratio",
     "max_holding",
-    "risk_per_trade",
 ]
 
 

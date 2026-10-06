@@ -110,9 +110,8 @@ CONFIG = {
         "k_stop": 2.0,
         "reward_ratio": 2.0,
         "max_holding": 20,
-        "risk_per_trade": 0.01,
     },
-    # Rangos de búsqueda, 9 dimensiones por régimen (SPEC punto 7)
+    # Rangos de búsqueda, 8 dimensiones (SPEC punto 7, v1.4)
     "search_ranges": {
         "sma_fast": (5, 30),
         "sma_slow": (40, 120),
@@ -122,8 +121,10 @@ CONFIG = {
         "k_stop": (1.0, 4.0),
         "reward_ratio": (1.0, 4.0),
         "max_holding": (5, 40),
-        "risk_per_trade": (0.005, 0.02),
     },
+    # Walk-forward: solo los parámetros de salida se optimizan por régimen y ventana; los de
+    # indicadores quedan en el θ* del diagnóstico sobre train (SPEC punto 7, v1.4)
+    "wf_search_params": ["k_stop", "reward_ratio", "max_holding"],
     # Optimización (SPEC punto 7, P2)
     "n_trials_diagnostic": 200,  # random y TPE sobre todo train
     "n_trials_wf": 150,  # por régimen y por ventana
@@ -167,7 +168,7 @@ CONFIG = {
     "adv_window": 20,  # días del volumen promedio en dólares y de la σ diaria
 }
 
-TRADE_PARAM_KEYS = ["k_stop", "reward_ratio", "max_holding", "risk_per_trade"]
+TRADE_PARAM_KEYS = ["k_stop", "reward_ratio", "max_holding"]
 
 
 def log(message: str) -> None:
@@ -405,8 +406,13 @@ def _fold_table(run: dict) -> pd.DataFrame:
     return pd.DataFrame(rows).set_index("fold")
 
 
-def stage_walk_forward(prices: dict, regimes: pd.Series, config: dict) -> dict:
-    """Walk-forward rolling y anchored, por régimen y con θ único (P2)."""
+def stage_walk_forward(prices: dict, regimes: pd.Series, plateau: dict, config: dict) -> dict:
+    """Walk-forward rolling y anchored, por régimen y con θ único (P2).
+
+    Los parámetros de indicadores quedan fijos en el θ* del diagnóstico (`plateau`) y por ventana
+    solo se optimizan los de `wf_search_params` (SPEC punto 7, v1.4).
+    """
+    config = {**config, "wf_fixed_params": plateau}
     runs = {}
     for mode in ("rolling", "anchored"):
         for per_regime in (True, False):
@@ -699,7 +705,7 @@ def main() -> None:
     diagnostics = stage_diagnostics(prices, config)
     log("robustez con θ* de la meseta")
     stage_robustness(prices, diagnostics["plateau"], config)
-    wf = stage_walk_forward(prices, regimes, config)
+    wf = stage_walk_forward(prices, regimes, diagnostics["plateau"], config)
     log("desempeño por régimen")
     stage_regime_performance(wf, regimes, rf, config)
     log("backtests finales y reporte")

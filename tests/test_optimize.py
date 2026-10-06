@@ -79,16 +79,14 @@ def test_sensitivity_varies_each_parameter(monkeypatch, config_test):
 
     monkeypatch.setattr("src.optimize._evaluate_params", fake_evaluate)
     result = sensitivity(params, prices, regimes, config_test, pct=0.20)
-    assert len(result) == 18
+    assert len(result) == 16
     assert set(result["factor"]) == {0.8, 1.2}
     sma_down = result[(result["parameter"] == "sma_fast") & (result["factor"] == 0.8)].iloc[0]
     sma_up = result[(result["parameter"] == "sma_fast") & (result["factor"] == 1.2)].iloc[0]
     assert sma_down["tested_value"] == 16
     assert sma_up["tested_value"] == 24
-    risk_down = result[(result["parameter"] == "risk_per_trade") & (result["factor"] == 0.8)].iloc[
-        0
-    ]
-    assert risk_down["tested_value"] == pytest.approx(0.008)
+    k_down = result[(result["parameter"] == "k_stop") & (result["factor"] == 0.8)].iloc[0]
+    assert k_down["tested_value"] == pytest.approx(1.6)
 
 
 def test_sensitivity_varies_shared_theta_jointly(monkeypatch, config_test):
@@ -102,7 +100,7 @@ def test_sensitivity_varies_shared_theta_jointly(monkeypatch, config_test):
 
     monkeypatch.setattr("src.optimize._evaluate_params", fake_evaluate)
     result = sensitivity(params, None, None, config_test, pct=0.20)
-    assert len(result) == 18
+    assert len(result) == 16
     assert set(result["regime"]) == {"unico"}
     assert {"tendencia": 2.4, "reversion": 2.4, "crisis": 2.4} in [
         {k: round(v, 10) for k, v in row.items()} for row in seen
@@ -521,7 +519,7 @@ def test_fold_without_feasible_params_stays_in_cash(monkeypatch, config_test, pe
     fold = _run_walk_forward_fold(window, prices, regimes, config_test, per_regime, seed=42)
     assert set(fold["cash_regimes"]) == {"tendencia", "reversion", "crisis"}
     assert fold["oos_trades"].empty
-    assert fold["trade_params"][["k_stop", "risk_per_trade"]].isna().all().all()
+    assert fold["trade_params"][["k_stop", "max_holding"]].isna().all().all()
     assert (fold["oos_equity"] == config_test["initial_capital"]).all()
 
 
@@ -601,3 +599,32 @@ def test_walk_forward_signals_uses_each_fold_theta_and_is_causal(config_test):
             )
     assert (signals["state"].iloc[:150] == 0).all().all()
     assert signals["atr"].iloc[250:].isna().all().all()
+
+
+def test_optimize_regime_searches_only_wf_params_and_keeps_fixed_theta(monkeypatch, config_test):
+    """Con `wf_search_params`, cada prueba solo mueve esos parámetros; el resto es `wf_fixed_params`."""
+    prices = _diagnostic_prices()
+    index = next(iter(prices.values())).index
+    regimes = pd.Series("tendencia", index=index)
+    fixed = {**config_test["base_params"], "sma_fast": 12, "sma_slow": 77, "rsi_window": 9}
+    config = dict(
+        config_test,
+        n_trials_wf=5,
+        wf_search_params=["k_stop", "reward_ratio", "max_holding"],
+        wf_fixed_params=fixed,
+    )
+    seen = []
+
+    def fake_evaluate(params_by_regime, prices, regimes, config, **kwargs):
+        seen.append(params_by_regime["tendencia"])
+        return None, {"calmar": 1.0, "ann_return": 0.1, "n_trades": 100}
+
+    monkeypatch.setattr("src.optimize._evaluate_params", fake_evaluate)
+    result = optimize_regime(prices, regimes, None, ("2020-01-01", "2020-06-30"), config, seed=42)
+    assert set(result["study"].trials[0].params) == {"k_stop", "reward_ratio", "max_holding"}
+    for params in seen:
+        assert {k: params[k] for k in ("sma_fast", "sma_slow", "rsi_window")} == {
+            "sma_fast": 12, "sma_slow": 77, "rsi_window": 9
+        }
+    assert set(result["params"]) == set(config["search_ranges"])
+    assert result["params"]["sma_slow"] == 77

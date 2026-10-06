@@ -417,7 +417,7 @@ def test_panel_feeds_run_backtest_and_accounting_holds(synthetic_prices, config_
     signals = {"state": np.sign(strength).astype(int), "strength": strength, "atr": atr}
     panel = sleeve_weights(synthetic_prices, signals, cyclic_regimes(index), config_test)
     trade_params = pd.DataFrame(
-        {"k_stop": 2.0, "reward_ratio": 2.0, "max_holding": 20, "risk_per_trade": 0.01}, index=index
+        {"k_stop": 2.0, "reward_ratio": 2.0, "max_holding": 20}, index=index
     )
 
     result = run_backtest(synthetic_prices, signals, panel, trade_params, config_test)
@@ -509,7 +509,7 @@ def test_rebalance_sweep_matches_manual_run_and_restricts_to_period(synthetic_pr
     cfg = {**config_test, "rebalance_frequency": "M", "rebalance_band": 0.05}
     signals = generate_signals(synthetic_prices, params, regimes, cfg)
     trade_params = pd.DataFrame(
-        {k: config_test["base_params"][k] for k in ["k_stop", "reward_ratio", "max_holding", "risk_per_trade"]},
+        {k: config_test["base_params"][k] for k in ["k_stop", "reward_ratio", "max_holding"]},
         index=index,
     )
     panel = sleeve_weights(synthetic_prices, signals, regimes, cfg)
@@ -643,7 +643,7 @@ def test_performance_comparison_rows_columns_and_manual_check(synthetic_prices, 
     index = synthetic_prices["A0"].index
     signals = generate_signals(synthetic_prices, params, regimes, config_test)
     trade_params = pd.DataFrame(
-        {k: config_test["base_params"][k] for k in ["k_stop", "reward_ratio", "max_holding", "risk_per_trade"]},
+        {k: config_test["base_params"][k] for k in ["k_stop", "reward_ratio", "max_holding"]},
         index=index,
     )
     panel = sleeve_weights(synthetic_prices, signals, regimes, config_test)

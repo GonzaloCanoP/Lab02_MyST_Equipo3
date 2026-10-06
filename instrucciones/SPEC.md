@@ -1,9 +1,9 @@
 # SPEC — Lab 02 · Equipo 3 · Nivel C (acciones y ETFs diarios)
 
-**Versión:** 1.3 · **Estado:** calibrado con train; validation y test sin observar
+**Versión:** 1.4 · **Estado:** sizing y walk-forward ajustados con train; test sin observar
 
 Estrategia direccional larga y corta, aplicada con las mismas reglas a 8 activos. Risk Parity asigna
-el capital por activo y fixed fractional dimensiona cada operación. Este documento se versiona ANTES
+el capital por activo y cada operación usa todo el capital asignado. Este documento se versiona ANTES
 de correr cualquier backtest; train, validation y test no se han observado. El detalle de régimen,
 agregación y rebalanceo va en `SPEC_portafolio.md`.
 
@@ -94,19 +94,22 @@ Dos capas:
    donde w^target combina Risk Parity, la fuerza de la señal y el multiplicador de régimen
    (`SPEC_portafolio.md`):  w̃_i = w_i^RP · s_i,  w^target = m(régimen) · w̃ / max(1, Σ|w̃_i|).
 
-2. **Tamaño de la operación (fixed fractional):** con riesgo ρ_g por operación en el régimen g,
+2. **Tamaño de la operación (v1.4):** cada entrada usa todo su capital asignado,
 
-       acciones = ρ_g · C_i,t / |E − SL|        ρ_g ∈ [0.5%, 2%]   (base 1%)
+       acciones = C_i,t / (E · (1 + comisión))
 
-   Se permiten acciones fraccionarias.
+   con E el precio de entrada con slippage. Se permiten acciones fraccionarias. El stop k · ATR₀ fija
+   SL y TP, no el tamaño.
 
-- **Sin apalancamiento:** acciones · E · (1 + comisión) ≤ C_i,t. Como Σ|w^target| ≤ 1, la exposición
-  bruta total nunca excede el capital. Si el tope aplica, el riesgo efectivo queda por debajo de ρ_g.
-- **Presupuesto de riesgo:** ρ_g del capital asignado al activo, medido hasta el stop. Es una
-  intención, no una pérdida máxima garantizada: los gaps pueden rebasarlo.
-- **Efecto declarado:** el riesgo por operación es ρ · |w^target| · Equity, así que los activos de menor
-  volatilidad (mayor w^RP) arriesgan más en dinero por operación. Las contribuciones al riesgo
-  realizadas se reportan junto a las objetivo.
+- **Sin apalancamiento:** acciones · E · (1 + comisión) = C_i,t. Como Σ|w^target| ≤ 1, la exposición
+  bruta total nunca excede el capital.
+- **Riesgo por operación:** lo controla la asignación (Risk Parity, fuerza s_i y m(régimen)) y la
+  salida por stop: la pérdida hasta el stop es ≈ C_i · k · ATR₀ / E. No hay presupuesto ρ separado.
+- **Por qué no fixed fractional (v1.3 → v1.4):** con ρ sobre C_i el riesgo se escalaba dos veces
+  (C_i ya es una fracción del equity) y la exposición bruta media en train fue de 10% del equity, con
+  volatilidad anual de 1.3%. Además ρ no se puede optimizar con Calmar: retorno y drawdown escalan
+  igual con el tamaño, así que el Calmar no cambia (en la sensibilidad de train, ρ ±20% movió el
+  Calmar 0.003). Con nocional = C_i la exposición media en train sube a ~44%.
 - **Benchmark de pesos iguales:** w^RP se sustituye por 1/8, con las mismas señales, costos y rebalanceo.
 - **Referencia de activo individual:** C = Equity.
 
@@ -138,10 +141,18 @@ limitación con una estimación de su magnitud.
   - 150 pruebas por régimen y por ventana del walk-forward.
   - Un juego de parámetros por régimen, compartido por los 8 activos. Como referencia se optimiza
     también un θ único sin régimen.
+  - **Dimensiones del walk-forward (v1.4):** los parámetros de indicadores (f, s, n, lo, hi) se fijan
+    en el θ* del estudio de diagnóstico TPE sobre los 4 años de train; en cada ventana de 6 meses solo
+    se optimizan por régimen k, r y m. Razón, medida en train: con las 9 dimensiones, las 42 ventanas
+    cuyo mes de prueba cae en train dieron Calmar IS mediano de 7.6 contra 0.8 fuera de muestra, y los
+    parámetros de indicadores recorrían todo su rango de un mes al siguiente (sobreajuste a 6 meses de
+    datos). Los indicadores describen la señal y se estiman mejor con 4 años; las salidas se adaptan
+    al régimen.
   - Se elige el medoide del mejor 10% de pruebas factibles (centro de meseta), no el máximo.
   - Purga y embargo: en cada ventana de entrenamiento, las posiciones se valúan a mercado al final de
     la ventana y no se abren posiciones en sus últimos 5 días.
-- **Espacio de búsqueda (9 dimensiones por régimen):** f, s, n, lo, hi, k, r, m, ρ_g.
+- **Espacio de búsqueda (8 dimensiones):** f, s, n, lo, hi, k, r, m en el diagnóstico; k, r, m por
+  régimen y ventana en el walk-forward.
 - **Actividad mínima:** al menos una operación cerrada por activo cada dos meses en promedio,
   es decir 24 por ventana de 6 meses. En cada estudio de régimen se exige
   N_min,g = ceil(24 · D_g / D), con D_g los días del régimen g en la ventana y D los días totales.
@@ -197,3 +208,4 @@ Valores base del punto 2, θ único, régimen ignorado, Risk Parity y costos com
 | 1.1 | 2026-10-04 | Compuerta y fuerza según el material de Risk Parity del curso (|Σx| ≥ 2, s = Σx/3); C_i a partir de w^target; valores base; variante anchored; purga y embargo; θ único de referencia | Alinear con los materiales del profe, previo al backtest |
 | 1.2 | 2026-10-04 | Lista de los 8 activos (acciones y ETFs) | Definida por el equipo antes de descargar datos |
 | 1.3 | 2026-10-06 | Calibraciones del punto 9 con train: actividad mínima, SMA–MACD y break-even; el mínimo de operaciones escala con el largo de la ventana | Medidas solo con train, antes de correr validation |
+| 1.4 | 2026-10-06 | Sizing con nocional = C_i (sin ρ, espacio de 8 dimensiones) y walk-forward que solo optimiza k, r y m con los indicadores fijos en el θ* de train | Exposición media de 10% y sobreajuste del rolling (Calmar IS 7.6 contra OOS 0.8), ambos medidos en train. Se mantiene largo/corto: los cortos restaron en train (−84k contra +116k de los largos), pero quitarlos se apoyaría en saber que el universo siguió subiendo después de 2021; se reporta como observación. Validation se vio en la corrida previa y no motivó estos cambios; test sigue sin observar |

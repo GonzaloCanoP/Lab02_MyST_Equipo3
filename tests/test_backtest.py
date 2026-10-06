@@ -5,9 +5,10 @@ calculó a mano (la derivación está en el docstring) y se escribe como constan
 corriendo el código que se prueba.
 
 Convención de los caminos: cada barra es (open, high, low, close) y `states[t]` es la señal al cierre
-de t, que se ejecuta al Open de t+1. Salvo que se indique, capital 100,000, sin costos, ATR = 1,
-k = 2, r = 2, ρ = 1% y m = 20; así la distancia al stop es 2, el TP está a 4 y el tamaño es
-0.01 · 100,000 / 2 = 500 acciones.
+de t, que se ejecuta al Open de t+1. Salvo que se indique, capital 100,000, sin costos, peso del
+activo 1, ATR = 1, k = 2, r = 2 y m = 20; así la distancia al stop es 2, el TP está a 4 y una
+entrada usa todo el capital asignado (SPEC punto 5, v1.4): en 100 son 100,000 / 100 = 1,000
+acciones.
 """
 
 import copy
@@ -18,7 +19,7 @@ import pytest
 
 from src.backtest import TRADE_COLUMNS, market_impact, run_backtest
 
-BASE_PARAMS = {"k_stop": 2.0, "reward_ratio": 2.0, "max_holding": 20, "risk_per_trade": 0.01}
+BASE_PARAMS = {"k_stop": 2.0, "reward_ratio": 2.0, "max_holding": 20}
 
 
 def flat(price: float) -> tuple[float, float, float, float]:
@@ -26,7 +27,9 @@ def flat(price: float) -> tuple[float, float, float, float]:
     return (price, price, price, price)
 
 
-def run_path(config, bars, states, atr=1.0, params=None, costs=False, config_overrides=None):
+def run_path(
+    config, bars, states, atr=1.0, params=None, costs=False, config_overrides=None, weight=1.0
+):
     """Corre `run_backtest` sobre un camino de un activo construido a mano."""
     index = pd.bdate_range("2020-01-01", periods=len(bars), name="date")
     prices = {"X": pd.DataFrame(bars, index=index, columns=["open", "high", "low", "close"])}
@@ -35,7 +38,7 @@ def run_path(config, bars, states, atr=1.0, params=None, costs=False, config_ove
         "state": pd.DataFrame({"X": states}, index=index, dtype=float),
         "atr": pd.DataFrame({"X": atr}, index=index, dtype=float),
     }
-    sleeve = pd.DataFrame({"X": 1.0}, index=index)
+    sleeve = pd.DataFrame({"X": weight}, index=index)
     trade_params = pd.DataFrame({**BASE_PARAMS, **(params or {})}, index=index)
     cfg = copy.deepcopy(config)
     cfg["initial_capital"] = 100_000.0
@@ -110,12 +113,12 @@ def test_run_backtest_does_not_modify_inputs(synthetic_prices, config_test):
 def test_golden_1_sl_and_tp_same_bar_exits_at_stop(config_test):
     """SL y TP en la misma barra → sale por stop (SPEC punto 7, empate intrabarra).
 
-    Entra largo al Open de la barra 1 en 100: SL = 98, TP = 104, 500 acciones. La barra 2 toca
-    97 y 105: se ejecuta el stop en 98. Equity = 100,000 + 500 · (98 − 100) = 99,000.
+    Entra largo al Open de la barra 1 en 100: SL = 98, TP = 104, 1,000 acciones. La barra 2 toca
+    97 y 105: se ejecuta el stop en 98. Equity = 100,000 + 1,000 · (98 − 100) = 98,000.
     """
     bars = [flat(100), (100, 101, 99, 100), (100, 105, 97, 100), flat(100)]
     result = run_path(config_test, bars, [1, 0, 0, 0])
-    assert result.equity.iloc[-1] == pytest.approx(99_000.0)
+    assert result.equity.iloc[-1] == pytest.approx(98_000.0)
     assert result.trades["exit_reason"].tolist() == ["stop"]
 
 
@@ -123,11 +126,11 @@ def test_golden_2_gap_through_stop_fills_at_open(config_test):
     """Gap que abre más allá del SL → llena al Open (SPEC punto 7).
 
     Largo en 100 con SL = 98. La barra 2 abre en 95: sale en 95.
-    Equity = 100,000 + 500 · (95 − 100) = 97,500.
+    Equity = 100,000 + 1,000 · (95 − 100) = 95,000.
     """
     bars = [flat(100), (100, 101, 99, 100), (95, 96, 94, 95), flat(95)]
     result = run_path(config_test, bars, [1, 0, 0, 0])
-    assert result.equity.iloc[-1] == pytest.approx(97_500.0)
+    assert result.equity.iloc[-1] == pytest.approx(95_000.0)
     assert result.trades["exit_price"].tolist() == [95.0]
 
 
@@ -135,49 +138,50 @@ def test_golden_3_gap_through_target_fills_at_target(config_test):
     """Gap que abre más allá del TP → llena en el nivel del TP, sin mejora (SPEC punto 7).
 
     Largo en 100 con TP = 104. La barra 2 abre en 110: sale en 104.
-    Equity = 100,000 + 500 · (104 − 100) = 102,000.
+    Equity = 100,000 + 1,000 · (104 − 100) = 104,000.
     """
     bars = [flat(100), (100, 101, 99, 100), (110, 111, 109, 110), flat(110)]
     result = run_path(config_test, bars, [1, 0, 0, 0])
-    assert result.equity.iloc[-1] == pytest.approx(102_000.0)
+    assert result.equity.iloc[-1] == pytest.approx(104_000.0)
     assert result.trades["exit_reason"].tolist() == ["target"]
 
 
 def test_golden_3b_target_gap_with_full_costs(config_test):
     """El mismo camino del golden 3 con comisión de 0.125% y slippage de 2 bps (SPEC punto 6).
 
-    Entrada: E = 100 · 1.0002 = 100.02; SL = 98.02; TP = 104.02; 500 acciones (el tope
-    100,000 / (100.02 · 1.00125) ≈ 998.5 no aplica). Nocional 50,010; comisión 62.5125.
-    Cash = 100,000 − 50,010 − 62.5125 = 49,927.4875.
-    Salida en el TP con slippage en contra: 104.02 · 0.9998 = 103.999196. Nocional 51,999.598;
-    comisión 64.9994975. Equity = 49,927.4875 + 51,999.598 − 64.9994975 = 101,862.0860025.
+    Entrada: E = 100 · 1.0002 = 100.02 y acciones = 100,000 / (100.02 · 1.00125) ≈ 998.55185, así
+    que nocional + comisión = 100,000 y el cash queda en 0. SL = 98.02 y TP = 104.02.
+    Nocional de entrada = 100,000 / 1.00125 ≈ 99,875.15605; comisión ≈ 124.84395.
+    Salida en el TP con slippage en contra: 104.02 · 0.9998 = 103.999196. Nocional de salida
+    = acciones · 103.999196 ≈ 103,848.58958; comisión ≈ 129.81074.
+    Equity = 100,000 · 104.02 · 0.9998 · 0.99875 / (100.02 · 1.00125) ≈ 103,718.77885.
     """
     bars = [flat(100), (100, 101, 99, 100), (110, 111, 109, 110), flat(110)]
     result = run_path(config_test, bars, [1, 0, 0, 0], costs=True)
-    assert result.equity.iloc[-1] == pytest.approx(101_862.0860025, abs=1e-6)
-    assert result.trades["commission"].iloc[0] == pytest.approx(127.5119975, abs=1e-6)
+    assert result.equity.iloc[-1] == pytest.approx(103_718.7788459786, abs=1e-6)
+    assert result.trades["commission"].iloc[0] == pytest.approx(254.6546820473608, abs=1e-6)
 
 
 def test_golden_4a_rearm_after_target_reenters_next_bar(config_test):
     """Tras un TP el lado queda armado: reentra a la barra siguiente (SPEC punto 4, rearme).
 
-    Largo en 100, TP en 104 durante la barra 2 → equity 102,000. La señal sigue en +1 al cierre de
-    la barra 2, así que reentra al Open de la barra 3 en 104 con 0.01 · 102,000 / 2 = 510 acciones.
-    La barra 4 cierra en 105: equity = 102,000 + 510 · (105 − 104) = 102,510.
+    Largo en 100, TP en 104 durante la barra 2 → equity 104,000. La señal sigue en +1 al cierre de
+    la barra 2, así que reentra al Open de la barra 3 en 104 con 104,000 / 104 = 1,000 acciones.
+    La barra 4 cierra en 105: equity = 104,000 + 1,000 · (105 − 104) = 105,000.
     """
     bars = [flat(100), (100, 101, 99, 100), (100, 104.5, 99.5, 104), flat(104), (104, 105, 104, 105)]
     result = run_path(config_test, bars, [1, 1, 1, 0, 0])
-    assert result.equity.iloc[-1] == pytest.approx(102_510.0)
-    assert result.positions["X"].iloc[-1] == pytest.approx(510.0)
+    assert result.equity.iloc[-1] == pytest.approx(105_000.0)
+    assert result.positions["X"].iloc[-1] == pytest.approx(1_000.0)
 
 
 def test_golden_4b_no_reentry_after_stop_until_state_changes(config_test):
     """Tras un SL el lado se desarma hasta la primera barra con Estado ≠ L (SPEC punto 4, rearme).
 
-    Largo en 100, stop en 98 durante la barra 2 → equity 99,000. La señal sigue en +1 en las
+    Largo en 100, stop en 98 durante la barra 2 → equity 98,000. La señal sigue en +1 en las
     barras 2 y 3 (no reentra), pasa a 0 en la barra 4 (se rearma) y vuelve a +1 en la barra 5.
-    Reentra al Open de la barra 6 en 99 con 0.01 · 99,000 / 2 = 495 acciones; cierra en 100.
-    Equity = 99,000 + 495 · (100 − 99) = 99,495. Si hubiera reentrado en la barra 3 o 4, el alza de
+    Reentra al Open de la barra 6 en 99 con 98,000 / 99 ≈ 989.899 acciones; cierra en 100.
+    Equity = 98,000 + 98,000 / 99 ≈ 98,989.899. Si hubiera reentrado en la barra 3 o 4, el alza de
     la barra 4 cambiaría el resultado.
     """
     bars = [
@@ -190,7 +194,7 @@ def test_golden_4b_no_reentry_after_stop_until_state_changes(config_test):
         (99, 100, 99, 100),
     ]
     result = run_path(config_test, bars, [1, 1, 1, 1, 0, 1, 0])
-    assert result.equity.iloc[-1] == pytest.approx(99_495.0)
+    assert result.equity.iloc[-1] == pytest.approx(98_000.0 + 98_000.0 / 99)
     assert len(result.fills) == 3
 
 
@@ -199,11 +203,11 @@ def test_golden_5_max_holding_exits_at_open_of_bar_m_plus_1(config_test):
 
     Largo en el Open de la barra 1 en 100. La barra 1 es la primera de las 3; tras el cierre de la
     barra 3 ya cumplió m y sale al Open de la barra 4 en 103. La señal sigue en +1 pero el lado
-    queda desarmado. Equity = 100,000 + 500 · (103 − 100) = 101,500.
+    queda desarmado. Equity = 100,000 + 1,000 · (103 − 100) = 103,000.
     """
     bars = [flat(100), flat(100), flat(101), flat(102), flat(103), flat(104)]
     result = run_path(config_test, bars, [1, 1, 1, 1, 1, 1], params={"max_holding": 3})
-    assert result.equity.iloc[-1] == pytest.approx(101_500.0)
+    assert result.equity.iloc[-1] == pytest.approx(103_000.0)
     assert result.trades["exit_reason"].tolist() == ["max_holding"]
     assert result.trades["exit_date"].iloc[0] == result.equity.index[4]
 
@@ -211,38 +215,38 @@ def test_golden_5_max_holding_exits_at_open_of_bar_m_plus_1(config_test):
 def test_golden_6_opposite_signal_reverses_at_same_open(config_test):
     """Señal opuesta → cierra y abre el lado contrario en el mismo Open (SPEC punto 4).
 
-    Largo en 100 (500 acciones). Equity al cierre de la barra 2 = 100,000 + 500 · 1 = 100,500.
-    La señal −1 de la barra 2 cierra el largo al Open de la barra 3 en 102 (+1,000) y abre un corto
-    en 102 con 0.01 · 100,500 / 2 = 502.5 acciones. La barra 3 cierra en 101:
-    equity = 101,000 + 502.5 · (102 − 101) = 101,502.5.
+    Largo en 100 (1,000 acciones). Equity al cierre de la barra 2 = 100,000 + 1,000 · 1 = 101,000.
+    La señal −1 de la barra 2 cierra el largo al Open de la barra 3 en 102 (+2,000) y abre un corto
+    en 102 con 101,000 / 102 ≈ 990.196 acciones. La barra 3 cierra en 101:
+    equity = 102,000 + (101,000 / 102) · (102 − 101) ≈ 102,990.196.
     """
     bars = [flat(100), (100, 100.5, 99.5, 100), (101, 101.5, 100.5, 101), (102, 102.5, 101.5, 101)]
     result = run_path(config_test, bars, [1, 0, -1, 0])
-    assert result.equity.iloc[-1] == pytest.approx(101_502.5)
-    assert result.positions["X"].iloc[-1] == pytest.approx(-502.5)
+    assert result.equity.iloc[-1] == pytest.approx(102_000.0 + 101_000.0 / 102)
+    assert result.positions["X"].iloc[-1] == pytest.approx(-101_000.0 / 102)
     assert result.trades["exit_reason"].tolist() == ["signal"]
 
 
-def test_golden_7_no_leverage_cap_trims_size(config_test):
-    """El tope sin apalancamiento recorta el tamaño (SPEC punto 5).
+def test_golden_7_size_follows_assigned_capital(config_test):
+    """El tamaño es el capital asignado C = |w| · Equity, sin apalancamiento (SPEC punto 5).
 
-    Con ATR = 0.25 la distancia al stop es 0.5 y el riesgo pediría 0.01 · 100,000 / 0.5 = 2,000
-    acciones (200,000 de nocional). El tope es 100,000 / 100 = 1,000 acciones.
-    Equity = 100,000 + 1,000 · (100.5 − 100) = 100,500.
+    Con peso 0.25 el capital asignado es 25,000 y en 100 son 250 acciones, sin importar la
+    distancia al stop (ATR = 0.25 la deja en 0.5). La barra 2 cierra en 100.5:
+    equity = 100,000 + 250 · (100.5 − 100) = 100,125.
     """
     bars = [flat(100), (100, 100.2, 99.8, 100.2), (100.4, 100.5, 100.3, 100.5)]
-    result = run_path(config_test, bars, [1, 0, 0], atr=0.25)
-    assert result.equity.iloc[-1] == pytest.approx(100_500.0)
-    assert result.positions["X"].iloc[-1] == pytest.approx(1_000.0)
+    result = run_path(config_test, bars, [1, 0, 0], atr=0.25, weight=0.25)
+    assert result.equity.iloc[-1] == pytest.approx(100_125.0)
+    assert result.positions["X"].iloc[-1] == pytest.approx(250.0)
 
 
 def test_golden_8_borrow_accrues_only_on_short_days(config_test):
     """El borrow se devenga solo en los días en corto (SPEC punto 6).
 
-    Tasa de borrow 25.2% anual → 0.1% diario, para que las cifras sean redondas. Corto de 500
-    acciones en 100 en las barras 1 y 2 (m = 2, sale al Open de la barra 3): 2 · 500 · 100 · 0.001
-    = 100. Después un largo plano en las barras 4 y 5, que no paga borrow.
-    Equity = 100,000 − 100 = 99,900.
+    Tasa de borrow 25.2% anual → 0.1% diario, para que las cifras sean redondas. Corto de 1,000
+    acciones en 100 en las barras 1 y 2 (m = 2, sale al Open de la barra 3): 2 · 1,000 · 100 ·
+    0.001 = 200. Después un largo plano en las barras 4 y 5, que no paga borrow.
+    Equity = 100,000 − 200 = 99,800.
     """
     bars = [flat(100), (100, 100.5, 99.5, 100), flat(100), flat(100), flat(100), flat(100)]
     result = run_path(
@@ -252,8 +256,8 @@ def test_golden_8_borrow_accrues_only_on_short_days(config_test):
         params={"max_holding": 2},
         config_overrides={"borrow_rate": 0.252},
     )
-    assert result.equity.iloc[-1] == pytest.approx(99_900.0)
-    assert result.costs["borrow"].sum() == pytest.approx(100.0)
+    assert result.equity.iloc[-1] == pytest.approx(99_800.0)
+    assert result.costs["borrow"].sum() == pytest.approx(200.0)
     assert (result.costs["borrow"] > 0).tolist() == [False, True, True, False, False, False]
     assert result.positions["X"].iloc[-1] > 0
 
@@ -262,12 +266,12 @@ def test_golden_9_signal_at_t_executes_at_t_plus_1(config_test):
     """La señal de t se ejecuta en t+1 y nunca en t (SPEC punto 7).
 
     La señal +1 aparece al cierre de la barra 1 (que sube de 100 a 105). Si se ejecutara en t
-    capturaría ese alza; se ejecuta al Open de la barra 2 en 105 con 500 acciones y cierra en 106.
-    Equity = 100,000 + 500 · (106 − 105) = 100,500.
+    capturaría ese alza; se ejecuta al Open de la barra 2 en 105 con 100,000 / 105 ≈ 952.381
+    acciones y cierra en 106. Equity = 100,000 + 100,000 / 105 ≈ 100,952.381.
     """
     bars = [flat(100), (100, 105, 100, 105), (105, 106, 105, 106)]
     result = run_path(config_test, bars, [0, 1, 0])
-    assert result.equity.iloc[-1] == pytest.approx(100_500.0)
+    assert result.equity.iloc[-1] == pytest.approx(100_000.0 + 100_000.0 / 105)
     assert result.fills["date"].tolist() == [result.equity.index[2]]
     assert result.fills["price"].tolist() == [105.0]
 

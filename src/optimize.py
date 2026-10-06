@@ -29,10 +29,9 @@ _PARAMETER_KINDS = {
     "k_stop": "float",
     "reward_ratio": "float",
     "max_holding": "int",
-    "risk_per_trade": "float",
 }
 
-_TRADE_PARAM_KEYS = ("k_stop", "reward_ratio", "max_holding", "risk_per_trade")
+_TRADE_PARAM_KEYS = ("k_stop", "reward_ratio", "max_holding")
 
 
 def _trade_params_panel(
@@ -209,7 +208,7 @@ def _evaluate_on_period(
 
 
 def search_space() -> dict:
-    """Describe las nueve dimensiones del espacio de búsqueda de P2.
+    """Describe las ocho dimensiones del espacio de búsqueda de P2 (SPEC punto 7, v1.4).
 
     Los límites numéricos se toman de ``config["search_ranges"]``
     cuando se ejecuta un estudio de Optuna. Aquí únicamente se
@@ -225,11 +224,13 @@ def search_space() -> dict:
     return dict(_PARAMETER_KINDS)
 
 
-def _suggest_params(trial: optuna.Trial, config: dict) -> dict:
-    """Propone los nueve parámetros de P2 usando los rangos de CONFIG."""
+def _suggest_params(trial: optuna.Trial, config: dict, names: list[str] | None = None) -> dict:
+    """Propone los parámetros `names` (todo el espacio si es None) con los rangos de CONFIG."""
     params = {}
 
     for name, kind in search_space().items():
+        if names is not None and name not in names:
+            continue
         low, high = config["search_ranges"][name]
         if kind == "int":
             params[name] = trial.suggest_int(name, int(low), int(high))
@@ -517,18 +518,29 @@ def surface_grid(
     return {"grid": pd.DataFrame(rows), "x": x, "y": y, "fixed": fixed}
 
 
+def _window_base(config: dict) -> dict:
+    """θ completo del que parte cada estudio del walk-forward (SPEC punto 7, v1.4).
+
+    `wf_fixed_params` es el θ* del diagnóstico sobre train, que `main.py` agrega a la
+    configuración antes del walk-forward; sin él se usan los valores base. Las dimensiones de
+    `wf_search_params` se optimizan por ventana y las demás quedan fijas en este θ.
+    """
+    return dict(config.get("wf_fixed_params") or config["base_params"])
+
+
 def _candidate_params_by_regime(candidate: dict, regime: str | None, config: dict) -> dict:
     """Construye los parámetros usados por un trial.
 
     Con regime=None se usa el mismo theta en todos los regímenes.
     Al optimizar un régimen específico, ese régimen usa el
-    candidato y los demás conservan los valores base.
+    candidato y los demás conservan el θ fijo de la ventana (`_window_base`); como en el estudio
+    solo se abre en los días del régimen, esos valores no se operan.
     """
     regime_names = list(config["regime_multiplier"])
 
     if regime is None:
         return {name: dict(candidate) for name in regime_names}
-    params = {name: dict(config["base_params"]) for name in regime_names}
+    params = {name: dict(_window_base(config)) for name in regime_names}
     params[regime] = dict(candidate)
 
     return params
@@ -632,7 +644,10 @@ def optimize_regime(
     study = optuna.create_study(direction="maximize", sampler=sampler)
 
     def objective(trial: optuna.Trial) -> float:
-        candidate = _suggest_params(trial, config)
+        candidate = {
+            **_window_base(config),
+            **_suggest_params(trial, config, config.get("wf_search_params")),
+        }
         params_by_regime = _candidate_params_by_regime(candidate, regime, config)
         _, metrics = _evaluate_params(
             params_by_regime,
@@ -694,7 +709,7 @@ def optimize_regime(
             "n_trades": 0,
             "window": (start, end),
         }
-    params = select_plateau(study, config["plateau_top_frac"])
+    params = {**_window_base(config), **select_plateau(study, config["plateau_top_frac"])}
     params_by_regime = _candidate_params_by_regime(params, regime, config)
     _, selected_metrics = _evaluate_params(
         params_by_regime, window_prices, labels, config, entry_mask=entry_mask, period=(start, end)

@@ -113,7 +113,7 @@ Las reglas de trading están en SPEC.md, puntos 4 a 7. Aquí solo van detalles d
   argumentos. Mismas entradas → mismo resultado.
 - Loop explícito por fecha con estado `cash`, `positions` (acciones con signo por ticker) y
   `equity = cash + Σ shares · close`. Dentro del loop se usan arreglos de numpy, no `.loc` por fila.
-- Los parámetros de la operación (k, r, m, ρ) y ATR₀ se congelan al abrir y se guardan en la posición.
+- Los parámetros de la operación (k, r, m) y ATR₀ se congelan al abrir y se guardan en la posición.
 - El capital asignado C_i,t y el equity usados para dimensionar son los del cierre de la barra de la
   señal.
 - Slippage: se aplica en contra sobre todo precio de llenado, incluidos los niveles de SL y TP:
@@ -137,7 +137,7 @@ Las reglas de trading están en SPEC.md, puntos 4 a 7. Aquí solo van detalles d
 | f | `sma_fast` | | k | `k_stop` |
 | s | `sma_slow` | | r | `reward_ratio` |
 | n | `rsi_window` | | m | `max_holding` |
-| lo | `rsi_lo` | | ρ_g | `risk_per_trade` |
+| lo | `rsi_lo` | | C_i (nocional de la entrada) | `sleeve · equity` |
 | hi | `rsi_hi` | | m(régimen) | `regime_multiplier` |
 | Estado_t | `state` | | s_i (fuerza) | `strength` |
 | w^RP | `rp_weights` | | w^target | `target_weights` |
@@ -190,7 +190,7 @@ run_backtest(prices: dict, signals: dict[str, pd.DataFrame], sleeve_weights: pd.
              entry_mask: pd.Series | None = None) -> BacktestResult
     # signals: salida de generate_signals (usa "state" y "atr").
     # sleeve_weights: panel de |w_target| ≥ 0 con Σ ≤ 1 (activo individual: una columna de unos).
-    # trade_params: fecha × {k_stop, reward_ratio, max_holding, risk_per_trade}, vigentes al cierre
+    # trade_params: fecha × {k_stop, reward_ratio, max_holding}, vigentes al cierre (SPEC v1.4)
     #   de cada fecha.
     # entry_mask: True donde se permite abrir (optimización por régimen y embargo).
     # trade_params puede traer la columna opcional "regime" (régimen vigente en la fecha); si existe,

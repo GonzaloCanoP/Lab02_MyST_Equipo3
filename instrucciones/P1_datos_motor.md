@@ -35,8 +35,8 @@ Hereda todo de `instrucciones/CLAUDE.md`.
 - `data.py`: los datos del portafolio están en `data/` con el formato de CLAUDE.md, sección 3. `load_risk_free` convierte `^IRX` (rendimiento
   anual en porcentaje) a tasa diaria decimal: ÷ 100 ÷ 252.
 - `backtest.py`: `run_backtest` implementa SPEC.md, puntos 4 a 7, con las convenciones de CLAUDE.md,
-  sección 5. Tamaño: `shares = ρ · C_i / |E − SL|`, con `C_i = sleeve_weights[i] · Equity` y tope
-  `shares · E · (1 + comisión) ≤ C_i`.
+  sección 5. Tamaño (SPEC v1.4): `shares = C_i / (E · (1 + comisión))`, con
+  `C_i = sleeve_weights[i] · Equity`, así que `shares · E · (1 + comisión) = C_i` (sin apalancamiento).
 - Rearme (SPEC punto 4): estado `armed[ticker][side]` que se desarma tras un SL o un holding máximo y
   se rearma en la primera barra con `state ≠ side`.
 - `entry_mask`: si es False en t, no se abren posiciones con la señal de t. Las salidas no se afectan.
@@ -48,7 +48,8 @@ Hereda todo de `instrucciones/CLAUDE.md`.
   4. Rearme: tras un TP reentra a la barra siguiente; tras un SL no reentra hasta que cambia el estado.
   5. Holding máximo → cierra al Open de la barra m+1.
   6. Señal opuesta → cierra y abre el lado contrario en el mismo Open.
-  7. El tope sin apalancamiento recorta el tamaño.
+  7. El tamaño es el capital asignado C_i, sin importar la distancia al stop (v1.4; antes, el tope
+     sin apalancamiento).
   8. El borrow se devenga solo en los días en corto.
   9. La señal de t se ejecuta en t+1 y nunca en t.
 - `test_pipeline.py`: sobre el fixture sintético, corre `compute_indicators` → `generate_signals` →

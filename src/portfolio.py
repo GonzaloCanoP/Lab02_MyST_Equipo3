@@ -14,7 +14,7 @@ from src.backtest import run_backtest
 from src.metrics import block_equity, compute_metrics
 from src.signals import generate_signals
 
-_TRADE_PARAM_KEYS = ["k_stop", "reward_ratio", "max_holding", "risk_per_trade"]
+_TRADE_PARAM_KEYS = ["k_stop", "reward_ratio", "max_holding"]
 # El contrato de `estimate_cov` no recibe `config`, así que λ vive aquí (SPEC_portafolio.md:
 # T_eff = 1 / (1 − λ) = 100 días, comparable a la ventana de 126 días).
 EWMA_LAMBDA = 0.99
