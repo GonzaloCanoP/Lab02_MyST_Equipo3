@@ -18,8 +18,10 @@ from src.portfolio import (
     performance_comparison,
     portfolio_results,
     risk_contribution_comparison,
+    risk_contribution_plot_frame,
     risk_contributions,
     rebalance_sweep,
+    sweep_plot_frame,
     risk_parity_weights,
     sleeve_weights,
     turnover,
@@ -668,3 +670,42 @@ def test_portfolio_results_structure_and_matches_components(synthetic_prices, co
     )
     with pytest.raises(ValueError):
         portfolio_results(synthetic_prices, params, regimes, config, 0.0, {})
+
+
+# ---------------------------------------------------------------------------------------------
+# Adaptadores a las figuras de plots.py (P3)
+# ---------------------------------------------------------------------------------------------
+
+
+def test_risk_contribution_plot_frame_matches_plot_contract(synthetic_prices, config_test):
+    out = risk_contribution_comparison(synthetic_prices, config_test)
+    frame = risk_contribution_plot_frame(out)
+    assert list(frame.index) == list(synthetic_prices)  # ticker × esquema
+    assert list(frame.columns) == ["Risk Parity", "Pesos iguales"]
+    np.testing.assert_allclose(frame.sum(), 1.0, atol=1e-9)
+    assert frame.loc["A0", "Pesos iguales"] == out.loc["equal", "A0"]
+
+
+def test_sweep_plot_frame_annualizes_and_defines_cost_as_gross_minus_net():
+    sweep = pd.DataFrame(
+        {
+            "frequency": ["W", "M"],
+            "band": [0.0, 0.05],
+            "n_rebalances": [10, 5],
+            "turnover": [0.6, 0.3],
+            "gross_return": [0.21, 0.1],
+            "total_cost": [1.0, 1.0],
+            "net_return": [0.1, 0.0],
+            "n_trades": [3, 3],
+        }
+    )
+    period = ("2020-01-01", "2021-12-31")  # 730 días ≈ 1.9986 años
+    out = sweep_plot_frame(sweep, period, {})
+    years = 730 / 365.25
+    assert list(out.columns) == ["gross_return", "cost", "net_return", "turnover"]
+    assert list(out.index) == ["W · 0", "M · 0.05"]
+    assert out.loc["W · 0", "gross_return"] == pytest.approx(1.21 ** (1 / years) - 1)
+    assert out.loc["W · 0", "net_return"] == pytest.approx(1.1 ** (1 / years) - 1)
+    np.testing.assert_allclose(out["cost"], out["gross_return"] - out["net_return"])
+    assert out.loc["M · 0.05", "net_return"] == pytest.approx(0.0)
+    np.testing.assert_allclose(out["turnover"], [0.6, 0.3])

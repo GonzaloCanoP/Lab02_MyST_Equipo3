@@ -609,3 +609,30 @@ def portfolio_results(
             for name, period in periods.items()
         },
     }
+
+
+def risk_contribution_plot_frame(contributions: pd.DataFrame) -> pd.DataFrame:
+    """Prepara la salida de `risk_contribution_comparison` para `plot_risk_contributions`.
+
+    Devuelve ticker × esquema con las partes del riesgo (fracción), quitando `spread` y `ann_vol`
+    y con los nombres de esquema que se leen en la figura.
+    """
+    shares = contributions.drop(columns=["spread", "ann_vol"]).T
+    return shares.rename(columns={"risk_parity": "Risk Parity", "equal": "Pesos iguales"})
+
+
+def sweep_plot_frame(sweep: pd.DataFrame, period: tuple, config: dict) -> pd.DataFrame:
+    """Prepara la salida de `rebalance_sweep` para `plot_rebalance_sweep` (todo anualizado).
+
+    Convierte los retornos acumulados del bloque `period` a retornos anuales compuestos y define el
+    costo como la diferencia entre el retorno bruto y el neto anualizados, para que las tres
+    series estén en la misma unidad. El índice es "frecuencia · banda".
+    """
+    years = max((pd.Timestamp(period[1]) - pd.Timestamp(period[0])).days / 365.25, 1e-9)
+    gross = (1.0 + sweep["gross_return"]) ** (1.0 / years) - 1.0
+    net = (1.0 + sweep["net_return"]) ** (1.0 / years) - 1.0
+    frame = pd.DataFrame(
+        {"gross_return": gross, "cost": gross - net, "net_return": net, "turnover": sweep["turnover"]}
+    )
+    frame.index = [f"{f} · {b:g}" for f, b in zip(sweep["frequency"], sweep["band"])]
+    return frame
