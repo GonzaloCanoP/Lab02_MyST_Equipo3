@@ -69,7 +69,7 @@ def test_sensitivity_varies_each_parameter(monkeypatch, config_test):
     regimes = None
     prices = None
 
-    def fake_evaluate(params_by_regime, prices, regimes, config, entry_mask=None):
+    def fake_evaluate(params_by_regime, prices, regimes, config, **kwargs):
         score = sum(
             float(value)
             for regime_params in params_by_regime.values()
@@ -90,6 +90,44 @@ def test_sensitivity_varies_each_parameter(monkeypatch, config_test):
     assert risk_down["tested_value"] == pytest.approx(0.008)
 
 
+def test_sensitivity_varies_shared_theta_jointly(monkeypatch, config_test):
+    """Con θ único en los tres regímenes, cada variación se aplica a los tres a la vez."""
+    params = dict.fromkeys(["tendencia", "reversion", "crisis"], config_test["base_params"])
+    seen = []
+
+    def fake_evaluate(params_by_regime, prices, regimes, config, **kwargs):
+        seen.append({name: p["k_stop"] for name, p in params_by_regime.items()})
+        return None, {"calmar": 1.0}
+
+    monkeypatch.setattr("src.optimize._evaluate_params", fake_evaluate)
+    result = sensitivity(params, None, None, config_test, pct=0.20)
+    assert len(result) == 18
+    assert set(result["regime"]) == {"unico"}
+    assert {"tendencia": 2.4, "reversion": 2.4, "crisis": 2.4} in [
+        {k: round(v, 10) for k, v in row.items()} for row in seen
+    ]
+
+
+def test_evaluate_on_period_truncates_and_masks(monkeypatch, config_test):
+    """Con periodo, los precios terminan en su fin y solo se abre dentro de él."""
+    from src.optimize import _evaluate_on_period
+
+    prices = _diagnostic_prices()
+    captured = {}
+
+    def fake_evaluate(params_by_regime, prices, regimes, config, **kwargs):
+        captured.update(kwargs, last=next(iter(prices.values())).index[-1])
+        return None, {}
+
+    monkeypatch.setattr("src.optimize._evaluate_params", fake_evaluate)
+    _evaluate_on_period({}, prices, None, config_test, ("2020-03-01", "2020-04-30"))
+    mask = captured["entry_mask"]
+    assert captured["last"] <= pd.Timestamp("2020-04-30")
+    assert mask[mask].index.min() >= pd.Timestamp("2020-03-01")
+    assert not mask.loc[: "2020-02-28"].any()
+    assert captured["period"] == (pd.Timestamp("2020-03-01"), pd.Timestamp("2020-04-30"))
+
+
 def test_sensitivity_rejects_invalid_pct(config_test):
     with pytest.raises(ValueError):
         sensitivity({"tendencia": config_test["base_params"]}, None, None, config_test, pct=0.0)
@@ -100,15 +138,12 @@ def test_single_indicator_comparison(monkeypatch, config_test):
         def __init__(self, n_trades):
             self.trades = pd.DataFrame({"pnl_net": [1.0] * n_trades})
 
-    def fake_evaluate_params(params_by_regime, prices, regimes, config, entry_mask=None):
-        return (FakeResult(40), {"calmar": 1.5})
-    scores = {"sma": (30, 0.8), "macd": (25, 0.6), "rsi": (20, 0.4)}
+    scores = {None: (40, 1.5), "sma": (30, 0.8), "macd": (25, 0.6), "rsi": (20, 0.4)}
 
-    def fake_single_indicator(indicator, params_by_regime, prices, regimes, config):
+    def fake_evaluate_params(params_by_regime, prices, regimes, config, indicator=None, **kwargs):
         n_trades, calmar = scores[indicator]
-        return (FakeResult(n_trades), {"calmar": calmar})
+        return (FakeResult(n_trades), {"calmar": calmar, "n_trades": n_trades})
     monkeypatch.setattr("src.optimize._evaluate_params", fake_evaluate_params)
-    monkeypatch.setattr("src.optimize._evaluate_single_indicator", fake_single_indicator)
     result = single_indicator_comparison(
         {"tendencia": config_test["base_params"]}, None, None, config_test
     )
@@ -127,10 +162,10 @@ def test_cost_sweep_finds_breakeven(monkeypatch, config_test):
     original_commission = config_test["commission"]
     original_slippage = config_test["slippage"]
 
-    def fake_evaluate(params_by_regime, prices, regimes, config, entry_mask=None):
+    def fake_evaluate(params_by_regime, prices, regimes, config, **kwargs):
         round_trip = 2.0 * (config["commission"] + config["slippage"]) * 10_000.0
         net_return = 0.05 - round_trip / 1000.0
-        return (FakeResult(), {"ann_return": net_return, "calmar": 1.0})
+        return (FakeResult(), {"ann_return": net_return, "calmar": 1.0, "n_trades": 2})
     monkeypatch.setattr("src.optimize._evaluate_params", fake_evaluate)
     result = cost_sweep(
         {"tendencia": config_test["base_params"]}, None, None, config_test, [100, 0, 50, 25, 75]

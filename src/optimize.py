@@ -89,11 +89,13 @@ def _evaluate_params(
     config: dict,
     entry_mask: pd.Series | None = None,
     period: tuple | None = None,
+    indicator: str | None = None,
 ) -> tuple:
     """Ejecuta señales, portafolio, backtest y métricas para un candidato.
 
-    Sigue el flujo definido en P2:
-    generate_signals -> sleeve_weights -> run_backtest -> métricas.
+    Sigue el flujo definido en P2: generate_signals → sleeve_weights → run_backtest → métricas.
+    Con `indicator` ∈ {"sma", "macd", "rsi"} las señales salen de ese indicador solo (pregunta 1).
+    Con `period`, las métricas usan solo el equity y las operaciones abiertas dentro del periodo.
     """
     tickers = list(prices)
 
@@ -101,7 +103,11 @@ def _evaluate_params(
         raise ValueError("prices no puede estar vacío.")
     index = prices[tickers[0]].index
     labels = regimes.reindex(index)
-    signals = generate_signals(prices, _signal_params(params_by_regime, config), labels, config)
+    signal_params = _signal_params(params_by_regime, config)
+    if indicator is None:
+        signals = generate_signals(prices, signal_params, labels, config)
+    else:
+        signals = _single_indicator_signals(prices, signal_params, labels, config, indicator)
     sleeve = sleeve_weights(prices, signals, labels, config, method="risk_parity")
     trade_params = _trade_params_panel(labels, params_by_regime, index)
     result = run_backtest(prices, signals, sleeve, trade_params, config, entry_mask=entry_mask)
@@ -171,25 +177,35 @@ def _single_indicator_signals(
     return {"state": state, "strength": strength, "atr": atr}
 
 
-def _evaluate_single_indicator(
-    indicator: str, params_by_regime: dict, prices: dict, regimes: pd.Series, config: dict
+def _evaluate_on_period(
+    params_by_regime: dict,
+    prices: dict,
+    regimes: pd.Series,
+    config: dict,
+    period: tuple | None,
+    indicator: str | None = None,
 ) -> tuple:
-    """Ejecuta el backtest usando únicamente un indicador."""
-    tickers = list(prices)
+    """`_evaluate_params` con θ congelado sobre un periodo (sensibilidad, costos, pregunta 1).
 
-    if not tickers:
-        raise ValueError("prices no puede estar vacío.")
-    index = prices[tickers[0]].index
-    labels = regimes.reindex(index)
-    signals = _single_indicator_signals(prices, params_by_regime, labels, config, indicator)
-    sleeve = sleeve_weights(prices, signals, labels, config, method="risk_parity")
-    trade_params = _trade_params_panel(labels, params_by_regime, index)
-    result = run_backtest(prices, signals, sleeve, trade_params, config)
-    metrics = compute_metrics(
-        result.equity, result.trades, rf=0.0, periods_per_year=config["periods_per_year"]
+    Los precios se recortan al fin del periodo (nada posterior entra al cálculo) y solo se abren
+    posiciones dentro de él; la historia previa solo calienta indicadores y Σ. Sin `period` se usa
+    toda la muestra.
+    """
+    if period is None:
+        return _evaluate_params(params_by_regime, prices, regimes, config, indicator=indicator)
+    start, end = pd.Timestamp(period[0]), pd.Timestamp(period[1])
+    window_prices = {ticker: data.loc[:end] for ticker, data in prices.items()}
+    index = next(iter(window_prices.values())).index
+    entry_mask = pd.Series((index >= start) & (index <= end), index=index)
+    return _evaluate_params(
+        params_by_regime,
+        window_prices,
+        regimes,
+        config,
+        entry_mask=entry_mask,
+        period=(start, end),
+        indicator=indicator,
     )
-
-    return result, metrics
 
 
 def search_space() -> dict:
@@ -923,28 +939,49 @@ def wf_efficiency(wf_result: dict, metric: str = "ann_return") -> float:
 
 
 def sensitivity(
-    params_by_regime: dict, prices: dict, regimes: pd.Series, config: dict, pct: float = 0.20
+    params_by_regime: dict,
+    prices: dict,
+    regimes: pd.Series,
+    config: dict,
+    pct: float = 0.20,
+    period: tuple | None = None,
 ) -> pd.DataFrame:
-    """Sensibilidad de cada parámetro óptimo a ±pct.
+    """Sensibilidad del Calmar a variar cada parámetro óptimo ±pct (P2, tarea 7).
 
-    Cada parámetro se modifica individualmente manteniendo los demás
-    constantes. Los parámetros enteros se redondean al entero más
-    cercano, como exige P2.
+    Cada parámetro se modifica solo, con los demás fijos; los enteros se redondean al entero más
+    cercano. Si los tres regímenes comparten θ (θ único), se varía en los tres a la vez y el
+    renglón se etiqueta "unico"; si no, se varía régimen por régimen.
+
+    Parameters
+    ----------
+    params_by_regime : dict
+        θ congelado por régimen.
+    prices, regimes, config
+        Datos, etiqueta causal y `CONFIG`.
+    pct : float
+        Variación relativa (SPEC: 0.20).
+    period : tuple or None
+        (inicio, fin) de la evaluación; ver `_evaluate_on_period`.
 
     Returns
     -------
     pd.DataFrame
-        Régimen, parámetro, factor, valor base, valor probado,
-        Calmar base, Calmar probado y delta de Calmar.
+        regime, parameter, factor, base_value, tested_value, baseline_calmar, calmar y
+        delta_calmar.
     """
     if not 0 < pct < 1:
         raise ValueError("pct debe estar en el intervalo (0, 1).")
-    _, baseline_metrics = _evaluate_params(params_by_regime, prices, regimes, config)
+    _, baseline_metrics = _evaluate_on_period(params_by_regime, prices, regimes, config, period)
     baseline_calmar = baseline_metrics["calmar"]
+    distinct = {tuple(sorted(params.items())) for params in params_by_regime.values()}
+    if len(distinct) == 1:
+        groups = {"unico": list(params_by_regime)}
+    else:
+        groups = {name: [name] for name in sorted(params_by_regime)}
     rows = []
 
-    for regime_name in sorted(params_by_regime):
-        base_params = params_by_regime[regime_name]
+    for group_name, members in groups.items():
+        base_params = params_by_regime[members[0]]
         for parameter in search_space():
             base_value = base_params[parameter]
             for factor in (1.0 - pct, 1.0 + pct):
@@ -954,8 +991,11 @@ def sensitivity(
                     varied_value = int(round(varied_value))
                 else:
                     varied_value = float(varied_value)
-                candidate[regime_name][parameter] = varied_value
-                _, candidate_metrics = _evaluate_params(candidate, prices, regimes, config)
+                for member in members:
+                    candidate[member][parameter] = varied_value
+                _, candidate_metrics = _evaluate_on_period(
+                    candidate, prices, regimes, config, period
+                )
                 candidate_calmar = candidate_metrics["calmar"]
                 if np.isfinite(baseline_calmar) and np.isfinite(candidate_calmar):
                     delta_calmar = candidate_calmar - baseline_calmar
@@ -963,7 +1003,7 @@ def sensitivity(
                     delta_calmar = np.nan
                 rows.append(
                     {
-                        "regime": regime_name,
+                        "regime": group_name,
                         "parameter": parameter,
                         "factor": factor,
                         "base_value": base_value,
@@ -1020,8 +1060,9 @@ def cost_sweep(
     regimes: pd.Series,
     config: dict,
     round_trip_bps: list[float],
+    period: tuple | None = None,
 ) -> pd.DataFrame:
-    """Evalúa la estrategia frente a distintos costos de transacción.
+    """Evalúa la estrategia frente a distintos costos de transacción (P2, tareas 8 y 11).
 
     El barrido usa costo total de ida y vuelta en basis points.
     Comisión y slippage se escalan manteniendo la proporción del
@@ -1040,6 +1081,8 @@ def cost_sweep(
         Configuración del proyecto.
     round_trip_bps : list[float]
         Costos totales de ida y vuelta a evaluar.
+    period : tuple or None
+        (inicio, fin) de la evaluación; ver `_evaluate_on_period`.
 
     Returns
     -------
@@ -1070,13 +1113,15 @@ def cost_sweep(
         else:
             candidate_config["commission"] = 0.0
             candidate_config["slippage"] = target_per_side
-        result, metrics = _evaluate_params(params_by_regime, prices, regimes, candidate_config)
+        _, metrics = _evaluate_on_period(
+            params_by_regime, prices, regimes, candidate_config, period
+        )
         rows.append(
             {
                 "round_trip_bps": cost_bps,
                 "net_return": metrics["ann_return"],
                 "calmar": metrics["calmar"],
-                "n_trades": int(len(result.trades)),
+                "n_trades": int(metrics["n_trades"]),
             }
         )
     cost_curve = pd.DataFrame(rows).set_index("round_trip_bps").sort_index()
@@ -1095,39 +1140,35 @@ def cost_sweep(
 
 
 def single_indicator_comparison(
-    params_by_regime: dict, prices: dict, regimes: pd.Series, config: dict
+    params_by_regime: dict,
+    prices: dict,
+    regimes: pd.Series,
+    config: dict,
+    period: tuple | None = None,
 ) -> pd.DataFrame:
-    """Compara indicadores individuales contra la regla 2 de 3.
+    """Compara cada indicador solo contra la regla 2 de 3 (pregunta 1 del lab).
 
-    Reporta el número de operaciones cerradas y el Calmar para
-    SMA, MACD, RSI y la estrategia principal de confirmación
-    2 de 3.
+    Con un indicador solo, su voto es el estado y la fuerza (SPEC punto 3 sin compuerta).
+
+    Parameters
+    ----------
+    params_by_regime, prices, regimes, config
+        θ congelado, datos, etiqueta causal y `CONFIG`.
+    period : tuple or None
+        (inicio, fin) de la evaluación; ver `_evaluate_on_period`.
 
     Returns
     -------
     pd.DataFrame
-        Estrategia, número de operaciones y Calmar.
+        Índice `strategy` ∈ {2_de_3, sma, macd, rsi}; columnas n_trades y calmar.
     """
     rows = []
-    result_2of3, metrics_2of3 = _evaluate_params(params_by_regime, prices, regimes, config)
-    rows.append(
-        {
-            "strategy": "2_de_3",
-            "n_trades": int(len(result_2of3.trades)),
-            "calmar": metrics_2of3["calmar"],
-        }
-    )
-
-    for indicator in ("sma", "macd", "rsi"):
-        result, metrics = _evaluate_single_indicator(
-            indicator, params_by_regime, prices, regimes, config
+    for strategy, indicator in (("2_de_3", None), ("sma", "sma"), ("macd", "macd"), ("rsi", "rsi")):
+        _, metrics = _evaluate_on_period(
+            params_by_regime, prices, regimes, config, period, indicator=indicator
         )
         rows.append(
-            {
-                "strategy": indicator,
-                "n_trades": int(len(result.trades)),
-                "calmar": metrics["calmar"],
-            }
+            {"strategy": strategy, "n_trades": int(metrics["n_trades"]), "calmar": metrics["calmar"]}
         )
 
     return pd.DataFrame(rows).set_index("strategy")
