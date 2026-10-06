@@ -9,6 +9,7 @@ from scipy.optimize import minimize
 from sklearn.covariance import LedoitWolf
 
 from src.backtest import run_backtest
+from src.metrics import compute_metrics
 from src.signals import generate_signals
 
 # El contrato de `estimate_cov` no recibe `config`, así que λ vive aquí (SPEC_portafolio.md:
@@ -496,4 +497,69 @@ def risk_contribution_comparison(
             "spread": float((panel.max(axis=1) - panel.min(axis=1)).mean()),
             "ann_vol": float(np.mean(vols[method])),
         }
+    return pd.DataFrame.from_dict(rows, orient="index")
+
+
+def performance_comparison(
+    prices: dict,
+    params_by_regime: dict,
+    regimes: pd.Series,
+    config: dict,
+    rf: pd.Series | float = 0.0,
+    trade_params: pd.DataFrame | None = None,
+    period: tuple | None = None,
+    include_assets: bool = True,
+) -> pd.DataFrame:
+    """Desempeño de Risk Parity, pesos iguales y (opcional) cada activo solo, con las mismas señales.
+
+    Los dos portafolios usan `sleeve_weights`; cada activo solo corre con C = Equity (columna de
+    unos), como la corrida base de P1. Las métricas son las de `compute_metrics` sobre el tramo
+    `period` de la curva y las operaciones que abren dentro de él.
+
+    Parameters
+    ----------
+    rf : pd.Series or float
+        Tasa libre de riesgo diaria, como la espera `compute_metrics`.
+    trade_params : pd.DataFrame, optional
+        Si falta, se usa `config["base_params"]` constante.
+    period : (inicio, fin), optional
+        Bloque sobre el que se miden las métricas; el backtest corre completo.
+
+    Returns
+    -------
+    pd.DataFrame
+        Una fila por estrategia ("risk_parity", "equal" y los tickers) con las columnas de
+        `compute_metrics`.
+    """
+    signals = generate_signals(prices, params_by_regime, regimes, config)
+    dates = next(iter(prices.values())).index
+    if trade_params is None:
+        trade_params = pd.DataFrame(
+            {k: config["base_params"][k] for k in _TRADE_PARAM_KEYS}, index=dates
+        )
+    start, end = (dates[0], dates[-1]) if period is None else (pd.Timestamp(period[0]), pd.Timestamp(period[1]))
+
+    results = {
+        method: run_backtest(
+            prices, signals, sleeve_weights(prices, signals, regimes, config, method=method),
+            trade_params, config,
+        )
+        for method in ("risk_parity", "equal")
+    }
+    if include_assets:
+        for ticker in prices:
+            results[ticker] = run_backtest(
+                {ticker: prices[ticker]},
+                {name: panel[[ticker]] for name, panel in signals.items()},
+                pd.DataFrame({ticker: 1.0}, index=dates),
+                trade_params,
+                config,
+            )
+
+    rows = {}
+    for name, result in results.items():
+        trades = result.trades[result.trades["entry_date"].between(start, end)]
+        rows[name] = compute_metrics(
+            result.equity.loc[start:end], trades, rf, config["periods_per_year"]
+        )
     return pd.DataFrame.from_dict(rows, orient="index")

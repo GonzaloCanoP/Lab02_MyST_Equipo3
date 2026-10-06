@@ -15,6 +15,7 @@ from src.portfolio import (
     estimate_cov,
     inverse_vol_weights,
     resolve_signal_conflicts,
+    performance_comparison,
     risk_contribution_comparison,
     risk_contributions,
     rebalance_sweep,
@@ -601,3 +602,42 @@ def test_risk_contribution_comparison_period_and_manual_check(synthetic_prices, 
         risk_contribution_comparison(
             synthetic_prices, config_test, period=(index[0], index[1])
         )
+
+
+# ---------------------------------------------------------------------------------------------
+# performance_comparison
+# ---------------------------------------------------------------------------------------------
+
+
+def test_performance_comparison_rows_columns_and_manual_check(synthetic_prices, config_test):
+    from src.metrics import compute_metrics
+
+    params, regimes = _sweep_inputs(synthetic_prices, config_test)
+    out = performance_comparison(synthetic_prices, params, regimes, config_test)
+    assert list(out.index) == ["risk_parity", "equal", *synthetic_prices]
+    assert {"calmar", "max_drawdown", "n_trades", "ann_return"} <= set(out.columns)
+    assert (out["max_drawdown"] <= 0).all()
+
+    index = synthetic_prices["A0"].index
+    signals = generate_signals(synthetic_prices, params, regimes, config_test)
+    trade_params = pd.DataFrame(
+        {k: config_test["base_params"][k] for k in ["k_stop", "reward_ratio", "max_holding", "risk_per_trade"]},
+        index=index,
+    )
+    panel = sleeve_weights(synthetic_prices, signals, regimes, config_test)
+    manual = run_backtest(synthetic_prices, signals, panel, trade_params, config_test)
+    expected = compute_metrics(manual.equity, manual.trades, 0.0, config_test["periods_per_year"])
+    assert out.loc["risk_parity", "ann_return"] == pytest.approx(expected["ann_return"])
+    assert out.loc["risk_parity", "n_trades"] == expected["n_trades"]
+
+
+def test_performance_comparison_period_and_options(synthetic_prices, config_test):
+    params, regimes = _sweep_inputs(synthetic_prices, config_test)
+    index = synthetic_prices["A0"].index
+    full = performance_comparison(synthetic_prices, params, regimes, config_test, include_assets=False)
+    part = performance_comparison(
+        synthetic_prices, params, regimes, config_test, period=(index[300], index[-1]), include_assets=False
+    )
+    assert list(full.index) == ["risk_parity", "equal"]
+    assert (part["n_trades"] <= full["n_trades"]).all()
+    assert not part["ann_return"].equals(full["ann_return"])
