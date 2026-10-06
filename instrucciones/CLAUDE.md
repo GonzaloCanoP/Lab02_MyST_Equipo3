@@ -207,8 +207,10 @@ breakeven_winrate(trades: pd.DataFrame, k_stop: float, reward_ratio: float,
 
 # ---------- src/regimes.py (P3)
 regime_features(prices: dict, config: dict) -> pd.DataFrame      # ventana móvil de 63 días
-fit_regime_model(features_train: pd.DataFrame, method: str, seed: int) -> object
+fit_regime_model(features_train: pd.DataFrame, method: str, seed: int, config: dict) -> object
     # method ∈ {"rules", "kmeans", "hmm"}
+    # config: cuantiles de reglas, n_init y covarianza del HMM (agregado 2026-10-05: CLAUDE.md §9
+    #   prohíbe escribirlos a mano en src/)
 predict_regimes(model: object, features: pd.DataFrame) -> pd.Series   # etiqueta FILTRADA
 viterbi_path(model: object, features: pd.DataFrame) -> pd.Series      # SOLO para la figura comparativa
 label_regimes(prices: dict, config: dict) -> pd.Series         # etiqueta causal para todas las fechas

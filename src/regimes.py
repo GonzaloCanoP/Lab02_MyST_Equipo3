@@ -59,8 +59,13 @@ def regime_features(prices: dict, config: dict) -> pd.DataFrame:
     )[FEATURE_COLUMNS]
 
 
-def fit_regime_model(features_train: pd.DataFrame, method: str, seed: int) -> object:
-    """Ajusta el clasificador con datos de entrenamiento; `method` ∈ {"rules", "kmeans", "hmm"}."""
+def fit_regime_model(
+    features_train: pd.DataFrame, method: str, seed: int, config: dict
+) -> object:
+    """Ajusta el clasificador con datos de entrenamiento; `method` ∈ {"rules", "kmeans", "hmm"}.
+
+    `config` aporta los valores fijos del clasificador (cuantiles, `n_init`, covarianza del HMM).
+    """
     raise NotImplementedError
 
 
