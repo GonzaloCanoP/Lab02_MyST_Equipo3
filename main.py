@@ -94,6 +94,7 @@ CONFIG = {
     "regime_kmeans_n_init": 10,  # reinicios de K-means
     "regime_hmm_covariance": "full",  # covarianza del GaussianHMM
     "regime_hmm_n_iter": 200,  # iteraciones máximas de EM del HMM
+    "regime_hmm_n_init": 10,  # reinicios del HMM; se queda el de mayor verosimilitud
     # Portafolio (SPEC_portafolio, P4)
     "regime_multiplier": {  # PENDIENTE: lo define P4 en SPEC_portafolio.md
         "tendencia": 1.0,
