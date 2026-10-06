@@ -8,8 +8,12 @@ import pandas as pd
 from scipy.optimize import minimize
 from sklearn.covariance import LedoitWolf
 
+from src.backtest import run_backtest
+from src.signals import generate_signals
+
 # El contrato de `estimate_cov` no recibe `config`, así que λ vive aquí (SPEC_portafolio.md:
 # T_eff = 1 / (1 − λ) = 100 días, comparable a la ventana de 126 días).
+_TRADE_PARAM_KEYS = ["k_stop", "reward_ratio", "max_holding", "risk_per_trade"]
 EWMA_LAMBDA = 0.99
 
 
@@ -338,6 +342,75 @@ def rebalance_sweep(
     config: dict,
     bands: list[float],
     frequencies: list[str],
+    trade_params: pd.DataFrame | None = None,
+    period: tuple | None = None,
 ) -> pd.DataFrame:
-    """Barrido de rebalanceo: retorno bruto, costo total, retorno neto y turnover."""
-    raise NotImplementedError
+    """Barrido de rebalanceo: retorno bruto, costo total, retorno neto y turnover.
+
+    Corre Risk Parity completo (señales → `sleeve_weights` → `run_backtest`) para cada
+    combinación de frecuencia × banda, con las mismas señales y θ en todas.
+
+    Parameters
+    ----------
+    trade_params : pd.DataFrame, optional
+        Parámetros de operación por fecha para `run_backtest`. Si falta, se usa
+        `config["base_params"]` constante, como la corrida base.
+    period : (inicio, fin), optional
+        Recorta las métricas a un bloque (p. ej. train o validation); el backtest corre completo.
+
+    Returns
+    -------
+    pd.DataFrame
+        Una fila por (frequency, band): n_rebalances (adopciones de pesos nuevos), turnover
+        (anualizado: media de ½Σ|Δw| de los pesos adoptados, sumada y dividida entre los años),
+        gross_return = (equity final + costos) / equity inicial − 1, total_cost (comisión +
+        slippage + borrow, en dinero), net_return = equity final / equity inicial − 1 y n_trades.
+    """
+    if not bands or not frequencies:
+        raise ValueError("bands y frequencies no pueden estar vacías")
+    if any(b < 0 for b in bands):
+        raise ValueError("las bandas deben ser no negativas")
+
+    signals = generate_signals(prices, params_by_regime, regimes, config)
+    dates = next(iter(prices.values())).index
+    if trade_params is None:
+        trade_params = pd.DataFrame(
+            {k: config["base_params"][k] for k in _TRADE_PARAM_KEYS}, index=dates
+        )
+    returns = _log_returns(prices)
+    start, end = (dates[0], dates[-1]) if period is None else (pd.Timestamp(period[0]), pd.Timestamp(period[1]))
+
+    rows = []
+    for frequency in frequencies:
+        for band in bands:
+            cfg = {**config, "rebalance_frequency": frequency, "rebalance_band": band}
+            panel = sleeve_weights(prices, signals, regimes, cfg, method="risk_parity")
+            result = run_backtest(prices, signals, panel, trade_params, cfg)
+
+            base = _base_weights(returns, cfg, "risk_parity")
+            change = 0.5 * base.diff().abs().sum(axis=1)  # NaN en la primera fila con pesos
+            change = change.loc[start:end].fillna(0.0)
+            first = base.dropna().index[0] if base.notna().any().any() else None
+            if first is not None and first in change.index:
+                change.loc[first] = 0.0  # la primera adopción parte de cero: no es rotación
+            years = max((end - start).days / 365.25, 1e-9)
+
+            equity = result.equity.loc[start:end]
+            total_cost = float(result.costs.loc[start:end].to_numpy().sum())
+            net = equity.iloc[-1] / equity.iloc[0] - 1
+            gross = (equity.iloc[-1] + total_cost) / equity.iloc[0] - 1
+            trades = result.trades
+            n_trades = int(trades["entry_date"].between(start, end).sum()) if len(trades) else 0
+            rows.append(
+                {
+                    "frequency": frequency,
+                    "band": band,
+                    "n_rebalances": int((change > 0).sum()),
+                    "turnover": float(change.sum() / years),
+                    "gross_return": float(gross),
+                    "total_cost": total_cost,
+                    "net_return": float(net),
+                    "n_trades": n_trades,
+                }
+            )
+    return pd.DataFrame(rows)
