@@ -76,6 +76,7 @@ def _evaluate_params(
     regimes: pd.Series,
     config: dict,
     entry_mask: pd.Series | None = None,
+    period: tuple | None = None,
 ) -> tuple:
     """Ejecuta señales, portafolio, backtest y métricas para un candidato.
 
@@ -125,9 +126,66 @@ def _evaluate_params(
         entry_mask=entry_mask,
     )
 
+    if period is None:
+        equity_for_metrics = (
+            result.equity
+        )
+
+        trades_for_metrics = (
+            result.trades
+        )
+
+    else:
+        start = pd.Timestamp(
+            period[0]
+        )
+
+        end = pd.Timestamp(
+            period[1]
+        )
+
+        equity_for_metrics = (
+            result.equity.loc[
+                start:end
+            ]
+        )
+
+        if len(
+            equity_for_metrics
+        ) < 2:
+            raise ValueError(
+                "La ventana debe contener "
+                "al menos dos observaciones."
+            )
+
+        if len(result.trades) == 0:
+            trades_for_metrics = (
+                result.trades.copy()
+            )
+
+        else:
+            entry_dates = (
+                pd.to_datetime(
+                    result.trades[
+                        "entry_date"
+                    ]
+                )
+            )
+
+            trade_mask = (
+                (entry_dates >= start)
+                & (entry_dates <= end)
+            )
+
+            trades_for_metrics = (
+                result.trades.loc[
+                    trade_mask
+                ].copy()
+            )
+
     metrics = compute_metrics(
-        result.equity,
-        result.trades,
+        equity_for_metrics,
+        trades_for_metrics,
         rf=0.0,
         periods_per_year=config[
             "periods_per_year"
@@ -547,11 +605,15 @@ def diagnostic_study(
                 regime_labels,
                 config,
                 entry_mask=entry_mask,
+                period=(
+                    train_start,
+                    train_end,
+                ),
             )
         )
 
         n_trades = int(
-            len(result.trades)
+            metrics["n_trades"]
         )
 
         trial.set_user_attr(
@@ -852,6 +914,41 @@ def select_plateau(
         ].params
     )
 
+def _candidate_params_by_regime(
+    candidate: dict,
+    regime: str | None,
+    config: dict,
+) -> dict:
+    """Construye los parámetros usados por un trial.
+
+    Con regime=None se usa el mismo theta en todos los regímenes.
+    Al optimizar un régimen específico, ese régimen usa el
+    candidato y los demás conservan los valores base.
+    """
+    regime_names = list(
+        config[
+            "regime_multiplier"
+        ]
+    )
+
+    if regime is None:
+        return {
+            name: dict(candidate)
+            for name in regime_names
+        }
+
+    params = {
+        name: dict(
+            config["base_params"]
+        )
+        for name in regime_names
+    }
+
+    params[regime] = dict(
+        candidate
+    )
+
+    return params
 
 def optimize_regime(
     prices: dict,
@@ -861,8 +958,459 @@ def optimize_regime(
     config: dict,
     seed: int,
 ) -> dict:
-    """Optimiza θ para un régimen dentro de una ventana de entrenamiento; `regime=None` → θ único."""
-    raise NotImplementedError
+    """Optimiza theta dentro de una ventana de entrenamiento.
+
+    Con ``regime=None`` se obtiene un theta único compartido por
+    todos los regímenes. Para un régimen concreto se aplica la
+    actividad mínima prorrateada definida en el SPEC.
+
+    Si el régimen tiene menos de ``min_regime_days`` observaciones,
+    no se optimiza y se indica que debe usarse el theta único de
+    la ventana.
+    """
+    if not prices:
+        raise ValueError(
+            "prices no puede estar vacío."
+        )
+
+    if len(window) != 2:
+        raise ValueError(
+            "window debe ser (inicio, fin)."
+        )
+
+    start = pd.Timestamp(
+        window[0]
+    )
+
+    end = pd.Timestamp(
+        window[1]
+    )
+
+    if start > end:
+        raise ValueError(
+            "El inicio de la ventana "
+            "no puede ser posterior al fin."
+        )
+
+    regime_names = list(
+        config[
+            "regime_multiplier"
+        ]
+    )
+
+    if (
+        regime is not None
+        and regime not in regime_names
+    ):
+        raise ValueError(
+            f"Régimen desconocido: {regime!r}"
+        )
+
+    window_prices = {
+        ticker: data.loc[
+            :end
+        ].copy()
+        for ticker, data
+        in prices.items()
+    }
+
+    first_ticker = next(
+        iter(window_prices)
+    )
+
+    index = window_prices[
+        first_ticker
+    ].index
+
+    train_dates = index[
+        (index >= start)
+        & (index <= end)
+    ]
+
+    if len(train_dates) == 0:
+        raise ValueError(
+            "La ventana no contiene observaciones."
+        )
+
+    labels = regimes.reindex(
+        index
+    )
+
+    unknown_regimes = (
+        set(
+            labels.dropna().unique()
+        )
+        - set(regime_names)
+    )
+
+    if unknown_regimes:
+        raise ValueError(
+            "Hay regímenes sin configuración: "
+            f"{sorted(unknown_regimes)}"
+        )
+
+    n_window_days = len(
+        train_dates
+    )
+
+    if regime is None:
+        n_regime_days = (
+            n_window_days
+        )
+
+        minimum_trades = int(
+            config[
+                "min_trades_per_window"
+            ]
+        )
+
+    else:
+        n_regime_days = int(
+            (
+                labels.loc[
+                    train_dates
+                ]
+                == regime
+            ).sum()
+        )
+
+        minimum_trades = int(
+            math.ceil(
+                config[
+                    "min_trades_per_window"
+                ]
+                * n_regime_days
+                / n_window_days
+            )
+        )
+
+        if (
+            n_regime_days
+            < config[
+                "min_regime_days"
+            ]
+        ):
+            return {
+                "regime": regime,
+                "params": None,
+                "study": None,
+                "feasible": False,
+                "fallback_to_single": True,
+                "n_window_days":
+                    n_window_days,
+                "n_regime_days":
+                    n_regime_days,
+                "minimum_trades":
+                    minimum_trades,
+                "is_ann_return":
+                    np.nan,
+                "is_calmar":
+                    np.nan,
+                "n_trades":
+                    0,
+                "window":
+                    (start, end),
+            }
+
+    embargo_days = int(
+        config[
+            "embargo_days"
+        ]
+    )
+
+    if embargo_days < 0:
+        raise ValueError(
+            "embargo_days no puede ser negativo."
+        )
+
+    if embargo_days >= len(
+        train_dates
+    ):
+        raise ValueError(
+            "El embargo consume toda la ventana."
+        )
+
+    entry_mask = pd.Series(
+        False,
+        index=index,
+        dtype=bool,
+    )
+
+    entry_mask.loc[
+        train_dates
+    ] = True
+
+    if regime is not None:
+        entry_mask &= (
+            labels == regime
+        )
+
+    if embargo_days > 0:
+        entry_mask.loc[
+            train_dates[
+                -embargo_days:
+            ]
+        ] = False
+
+    sampler = (
+        optuna.samplers.TPESampler(
+            seed=seed
+        )
+    )
+
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=sampler,
+    )
+
+    def objective(
+        trial: optuna.Trial,
+    ) -> float:
+        candidate = _suggest_params(
+            trial,
+            config,
+        )
+
+        params_by_regime = (
+            _candidate_params_by_regime(
+                candidate,
+                regime,
+                config,
+            )
+        )
+
+        _, metrics = (
+            _evaluate_params(
+                params_by_regime,
+                window_prices,
+                labels,
+                config,
+                entry_mask=entry_mask,
+                period=(
+                    start,
+                    end,
+                ),
+            )
+        )
+
+        n_trades = int(
+            metrics["n_trades"]
+        )
+
+        trial.set_user_attr(
+            "n_trades",
+            n_trades,
+        )
+
+        trial.set_user_attr(
+            "minimum_trades",
+            minimum_trades,
+        )
+
+        if (
+            n_trades
+            < minimum_trades
+        ):
+            trial.set_user_attr(
+                "feasible",
+                False,
+            )
+
+            return -np.inf
+
+        calmar = float(
+            metrics["calmar"]
+        )
+
+        if not np.isfinite(
+            calmar
+        ):
+            # Política provisional de P2 para MDD = 0:
+            # el trial se considera infactible.
+            trial.set_user_attr(
+                "feasible",
+                False,
+            )
+
+            return -np.inf
+
+        trial.set_user_attr(
+            "feasible",
+            True,
+        )
+
+        return calmar
+
+    start_time = (
+        time.perf_counter()
+    )
+
+    study.optimize(
+        objective,
+        n_trials=int(
+            config[
+                "n_trials_wf"
+            ]
+        ),
+        n_jobs=1,
+    )
+
+    elapsed_seconds = (
+        time.perf_counter()
+        - start_time
+    )
+
+    feasible_trials = [
+        trial
+        for trial in study.trials
+        if (
+            trial.state
+            == optuna.trial.TrialState.COMPLETE
+            and trial.value is not None
+            and np.isfinite(
+                trial.value
+            )
+        )
+    ]
+
+    study.set_user_attr(
+        "seed",
+        int(seed),
+    )
+
+    study.set_user_attr(
+        "regime",
+        (
+            "single"
+            if regime is None
+            else regime
+        ),
+    )
+
+    study.set_user_attr(
+        "minimum_trades",
+        minimum_trades,
+    )
+
+    study.set_user_attr(
+        "n_regime_days",
+        n_regime_days,
+    )
+
+    study.set_user_attr(
+        "n_window_days",
+        n_window_days,
+    )
+
+    study.set_user_attr(
+        "n_trials_requested",
+        int(
+            config[
+                "n_trials_wf"
+            ]
+        ),
+    )
+
+    study.set_user_attr(
+        "n_trials_evaluated",
+        len(study.trials),
+    )
+
+    study.set_user_attr(
+        "n_trials_feasible",
+        len(feasible_trials),
+    )
+
+    study.set_user_attr(
+        "elapsed_seconds",
+        float(elapsed_seconds),
+    )
+
+    if not feasible_trials:
+        return {
+            "regime": regime,
+            "params": None,
+            "study": study,
+            "feasible": False,
+            "fallback_to_single": False,
+            "n_window_days":
+                n_window_days,
+            "n_regime_days":
+                n_regime_days,
+            "minimum_trades":
+                minimum_trades,
+            "is_ann_return":
+                np.nan,
+            "is_calmar":
+                np.nan,
+            "n_trades":
+                0,
+            "window":
+                (start, end),
+        }
+
+    params = select_plateau(
+        study,
+        config[
+            "plateau_top_frac"
+        ],
+    )
+
+    params_by_regime = (
+        _candidate_params_by_regime(
+            params,
+            regime,
+            config,
+        )
+    )
+
+    _, selected_metrics = (
+        _evaluate_params(
+            params_by_regime,
+            window_prices,
+            labels,
+            config,
+            entry_mask=entry_mask,
+            period=(
+                start,
+                end,
+            ),
+        )
+    )
+
+    return {
+        "regime": regime,
+        "params": params,
+        "study": study,
+        "feasible": True,
+        "fallback_to_single": False,
+        "n_window_days":
+            n_window_days,
+        "n_regime_days":
+            n_regime_days,
+        "minimum_trades":
+            minimum_trades,
+        "is_ann_return":
+            float(
+                selected_metrics[
+                    "ann_return"
+                ]
+            ),
+        "is_calmar":
+            float(
+                selected_metrics[
+                    "calmar"
+                ]
+            ),
+        "n_trades":
+            int(
+                selected_metrics[
+                    "n_trades"
+                ]
+            ),
+        "window":
+            (start, end),
+    }
 
 
 def walk_forward(

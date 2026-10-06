@@ -2,10 +2,12 @@ import pandas as pd
 import numpy as np
 import optuna
 import pytest
+import math
 
 from src.optimize import (
     cost_sweep,
     diagnostic_study,
+    optimize_regime,
     search_space,
     select_plateau,
     sensitivity,
@@ -627,17 +629,19 @@ def test_diagnostic_study_runs_requested_trials(
         regimes,
         config,
         entry_mask=None,
+        period=None,
     ):
         seen_masks.append(
             entry_mask.copy()
         )
 
         return (
-            FakeResult(),
-            {
-                "calmar": 1.25
-            },
-        )
+    FakeResult(),
+    {
+        "calmar": 1.25,
+        "n_trades": 30,
+    },
+)
 
     monkeypatch.setattr(
         "src.optimize._evaluate_params",
@@ -733,13 +737,15 @@ def test_diagnostic_study_rejects_low_activity(
         regimes,
         config,
         entry_mask=None,
+        period=None,
     ):
         return (
-            FakeResult(),
-            {
-                "calmar": 10.0
-            },
-        )
+    FakeResult(),
+    {
+        "calmar": 10.0,
+        "n_trades": 23,
+    },
+)
 
     monkeypatch.setattr(
         "src.optimize._evaluate_params",
@@ -768,3 +774,212 @@ def test_diagnostic_study_rejects_low_activity(
     assert trial.user_attrs[
         "n_trades"
     ] == 23
+
+def test_optimize_regime_prorates_activity(
+    monkeypatch,
+    config_test,
+):
+    prices = _diagnostic_prices()
+
+    index = next(
+        iter(prices.values())
+    ).index
+
+    regimes = pd.Series(
+        "reversion",
+        index=index,
+    )
+
+    train_dates = index[
+        (
+            index
+            >= pd.Timestamp(
+                "2020-01-01"
+            )
+        )
+        & (
+            index
+            <= pd.Timestamp(
+                "2020-06-30"
+            )
+        )
+    ]
+
+    half = len(
+        train_dates
+    ) // 2
+
+    regimes.loc[
+        train_dates[:half]
+    ] = "tendencia"
+
+    config = dict(
+        config_test
+    )
+
+    config[
+        "n_trials_wf"
+    ] = 3
+
+    config[
+        "embargo_days"
+    ] = 5
+
+    config[
+        "min_regime_days"
+    ] = 21
+
+    seen_masks = []
+
+    def fake_evaluate(
+        params_by_regime,
+        prices,
+        regimes,
+        config,
+        entry_mask=None,
+        period=None,
+    ):
+        seen_masks.append(
+            entry_mask.copy()
+        )
+
+        return (
+            None,
+            {
+                "calmar": 1.0,
+                "ann_return": 0.10,
+                "n_trades": 20,
+            },
+        )
+
+    monkeypatch.setattr(
+        "src.optimize._evaluate_params",
+        fake_evaluate,
+    )
+
+    result = optimize_regime(
+        prices,
+        regimes,
+        regime="tendencia",
+        window=(
+            "2020-01-01",
+            "2020-06-30",
+        ),
+        config=config,
+        seed=42,
+    )
+
+    expected_minimum = math.ceil(
+        config[
+            "min_trades_per_window"
+        ]
+        * result[
+            "n_regime_days"
+        ]
+        / result[
+            "n_window_days"
+        ]
+    )
+
+    assert result[
+        "minimum_trades"
+    ] == expected_minimum
+
+    assert result[
+        "feasible"
+    ] is True
+
+    assert result[
+        "fallback_to_single"
+    ] is False
+
+    assert len(
+        result["study"].trials
+    ) == 3
+
+    assert set(
+        result["params"]
+    ) == set(
+        config[
+            "search_ranges"
+        ]
+    )
+
+    mask = seen_masks[0]
+
+    allowed_dates = mask[
+        mask
+    ].index
+
+    assert (
+        regimes.loc[
+            allowed_dates
+        ]
+        == "tendencia"
+    ).all()
+
+    assert not mask.loc[
+        train_dates[-5:]
+    ].any()
+
+
+def test_optimize_regime_uses_single_fallback(
+    config_test,
+):
+    prices = _diagnostic_prices()
+
+    index = next(
+        iter(prices.values())
+    ).index
+
+    regimes = pd.Series(
+        "tendencia",
+        index=index,
+    )
+
+    train_dates = index[
+        (
+            index
+            >= pd.Timestamp(
+                "2020-01-01"
+            )
+        )
+        & (
+            index
+            <= pd.Timestamp(
+                "2020-06-30"
+            )
+        )
+    ]
+
+    regimes.loc[
+        train_dates[:10]
+    ] = "crisis"
+
+    result = optimize_regime(
+        prices,
+        regimes,
+        regime="crisis",
+        window=(
+            "2020-01-01",
+            "2020-06-30",
+        ),
+        config=config_test,
+        seed=42,
+    )
+
+    assert result[
+        "fallback_to_single"
+    ] is True
+
+    assert result[
+        "study"
+    ] is None
+
+    assert result[
+        "params"
+    ] is None
+
+    assert result[
+        "n_regime_days"
+    ] == 10
