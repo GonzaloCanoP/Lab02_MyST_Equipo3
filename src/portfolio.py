@@ -181,6 +181,75 @@ def compose_target(
     return regime_multiplier * scaled / max(1.0, gross)
 
 
+def resolve_signal_conflicts(
+    strength: pd.Series, corr: pd.DataFrame, threshold: float = 0.7
+) -> pd.Series:
+    """Política ante señales opuestas en activos muy correlacionados (SPEC_portafolio, Agregación).
+
+    Dos activos i, j están en conflicto si ρ_ij > `threshold` y s_i, s_j tienen signo opuesto.
+    En cada conflicto se conserva la señal de mayor |s| y la otra pasa a 0; con |s_i| = |s_j|,
+    ambas pasan a 0. Todas las decisiones se toman sobre la `strength` original, así que el
+    resultado no depende del orden de los activos.
+
+    Parameters
+    ----------
+    strength : pd.Series
+        s_i del día, indexada por ticker.
+    corr : pd.DataFrame
+        Correlaciones entre los activos, calculadas solo con retornos hasta ese día.
+    threshold : float
+        Umbral de correlación (SPEC: 0.7).
+
+    Returns
+    -------
+    pd.Series
+        Copia de `strength` con las señales perdedoras en 0.
+    """
+    s = strength.to_numpy(dtype=float)
+    rho = corr.reindex(index=strength.index, columns=strength.index).to_numpy(dtype=float)
+    strength_abs = np.abs(s)
+    conflict = (rho > threshold) & (np.outer(s, s) < 0)
+    # i pierde si algún rival con el que choca tiene |s| mayor o igual al suyo.
+    loses = (conflict & (strength_abs[None, :] >= strength_abs[:, None])).any(axis=1)
+    resolved = strength.copy()
+    resolved[loses] = 0.0
+    return resolved
+
+
+def _log_returns(prices: dict) -> pd.DataFrame:
+    """Log-retornos diarios del `close` de cada activo (nunca precios; Paso 2)."""
+    closes = pd.DataFrame({ticker: ohlcv["close"] for ticker, ohlcv in prices.items()})
+    return np.log(closes).diff()
+
+
+def _base_weights(returns: pd.DataFrame, config: dict, method: str) -> pd.DataFrame:
+    """Panel de w^RP vigente por fecha, con rebalanceo híbrido (SPEC_portafolio, Rebalanceo).
+
+    En el primer día hábil de cada periodo de `rebalance_frequency` se reestima Σ con los últimos
+    `cov_window` retornos (hasta ese día) y se calcula el w^RP candidato; se adopta solo si
+    ‖w_cand − w_vigente‖₁ > `rebalance_band`. Entre revisiones w^RP se mantiene. La primera
+    adopción ocurre en cuanto hay `cov_window` retornos. Antes de eso el panel es NaN.
+    """
+    tickers = list(returns.columns)
+    window, band = config["cov_window"], config["rebalance_band"]
+    # Primer día hábil de cada periodo; depende solo de fechas anteriores, así que es causal.
+    is_review = ~returns.index.to_period(config["rebalance_frequency"]).duplicated()
+    panel = np.full(returns.shape, np.nan)
+    current = None
+    for pos in range(len(returns)):
+        if pos >= window and (current is None or is_review[pos]):
+            if method == "risk_parity":
+                sample = returns.iloc[pos - window + 1 : pos + 1]
+                candidate = risk_parity_weights(estimate_cov(sample, config["cov_method"]))
+            else:
+                candidate = equal_weights(tickers)
+            if current is None or (candidate - current).abs().sum() > band:
+                current = candidate
+        if current is not None:
+            panel[pos] = current.to_numpy()
+    return pd.DataFrame(panel, index=returns.index, columns=tickers)
+
+
 def sleeve_weights(
     prices: dict,
     signals: dict[str, pd.DataFrame],
@@ -188,8 +257,66 @@ def sleeve_weights(
     config: dict,
     method: str = "risk_parity",
 ) -> pd.DataFrame:
-    """Panel causal de |w_target| con rebalanceo aplicado; `method` ∈ {"risk_parity", "equal"}."""
-    raise NotImplementedError
+    """Panel causal de |w_target| con rebalanceo aplicado; `method` ∈ {"risk_parity", "equal"}.
+
+    Es la única puerta entre el portafolio y el motor (SPEC punto 5). Para cada fecha t:
+
+    1. w^RP vigente (`_base_weights`), o 1/n con `method="equal"` y el mismo rebalanceo.
+    2. s_i de `signals["strength"]`, con la política de conflictos entre activos correlacionados
+       (`resolve_signal_conflicts`, ρ sobre los últimos `cov_window` retornos hasta t).
+    3. `compose_target` con m(régimen) de `config["regime_multiplier"]`; se devuelve |w_target|.
+
+    s_i y m(régimen) se actualizan cada día; solo w^RP se rebalancea. No hay `shift`: el
+    desplazamiento t → t+1 lo hace `run_backtest` (CLAUDE.md, sección 4).
+
+    Parameters
+    ----------
+    prices : dict[str, pd.DataFrame]
+        OHLCV por ticker con índice común.
+    signals : dict[str, pd.DataFrame]
+        Salida de `generate_signals`; aquí solo se usa el panel "strength".
+    regimes : pd.Series
+        Etiqueta filtrada por fecha ("tendencia", "reversion", "crisis"); NaN sin etiqueta.
+    config : dict
+        Usa `cov_method`, `cov_window`, `rebalance_frequency` (alias de periodo de pandas: "D",
+        "W", "M", "Q"), `rebalance_band`, `regime_multiplier` y, opcional,
+        `conflict_corr_threshold` (0.7 por defecto).
+    method : str
+        "risk_parity" o "equal" (benchmark de pesos iguales con las mismas señales y costos).
+
+    Returns
+    -------
+    pd.DataFrame
+        Fechas × tickers con |w_target| ≥ 0 y Σ ≤ 1. NaN donde no hay asignación definida (sin
+        historia para Σ o sin régimen); `run_backtest` no abre posiciones con NaN.
+    """
+    if method not in ("risk_parity", "equal"):
+        raise ValueError(f"method desconocido: {method!r}")
+    multiplier = config["regime_multiplier"]
+    returns = _log_returns(prices)
+    dates, tickers = returns.index, list(returns.columns)
+
+    labels = regimes.reindex(dates)
+    unknown = set(labels.dropna().unique()) - set(multiplier)
+    if unknown:
+        raise ValueError(f"regime_multiplier no define los regímenes: {sorted(unknown)}")
+
+    strength = signals["strength"].reindex(index=dates, columns=tickers).fillna(0.0)
+    base = _base_weights(returns, config, method)
+    window = config["cov_window"]
+    threshold = config.get("conflict_corr_threshold", 0.7)
+
+    target = np.full(base.shape, np.nan)
+    for pos in range(len(dates)):
+        regime, w_rp = labels.iloc[pos], base.iloc[pos]
+        if pd.isna(regime) or w_rp.isna().any():
+            continue
+        s = strength.iloc[pos]
+        if (s > 0).any() and (s < 0).any():  # sin señales opuestas no hay conflicto posible
+            corr = returns.iloc[pos - window + 1 : pos + 1].corr()
+            s = resolve_signal_conflicts(s, corr, threshold)
+        target[pos] = compose_target(w_rp, s, multiplier[regime]).abs().to_numpy()
+    return pd.DataFrame(target, index=dates, columns=tickers)
 
 
 def turnover(weights_drift: pd.DataFrame, weights_target: pd.DataFrame) -> pd.Series:
