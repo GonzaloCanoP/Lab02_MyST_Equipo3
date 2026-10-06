@@ -3,6 +3,8 @@
 La covarianza en t usa solo retornos hasta t (CLAUDE.md, sección 4).
 """
 
+import hashlib
+
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
@@ -12,9 +14,9 @@ from src.backtest import run_backtest
 from src.metrics import compute_metrics
 from src.signals import generate_signals
 
+_TRADE_PARAM_KEYS = ["k_stop", "reward_ratio", "max_holding", "risk_per_trade"]
 # El contrato de `estimate_cov` no recibe `config`, así que λ vive aquí (SPEC_portafolio.md:
 # T_eff = 1 / (1 − λ) = 100 días, comparable a la ventana de 126 días).
-_TRADE_PARAM_KEYS = ["k_stop", "reward_ratio", "max_holding", "risk_per_trade"]
 EWMA_LAMBDA = 0.99
 ESTIMATORS = ("sample", "ewma", "ledoit_wolf")
 
@@ -211,15 +213,18 @@ def resolve_signal_conflicts(
     pd.Series
         Copia de `strength` con las señales perdedoras en 0.
     """
-    s = strength.to_numpy(dtype=float)
     rho = corr.reindex(index=strength.index, columns=strength.index).to_numpy(dtype=float)
+    resolved = strength.copy()
+    resolved[_conflict_losers(strength.to_numpy(dtype=float), rho, threshold)] = 0.0
+    return resolved
+
+
+def _conflict_losers(s: np.ndarray, rho: np.ndarray, threshold: float) -> np.ndarray:
+    """Máscara de los activos cuya señal pierde un conflicto (regla de `resolve_signal_conflicts`)."""
     strength_abs = np.abs(s)
     conflict = (rho > threshold) & (np.outer(s, s) < 0)
     # i pierde si algún rival con el que choca tiene |s| mayor o igual al suyo.
-    loses = (conflict & (strength_abs[None, :] >= strength_abs[:, None])).any(axis=1)
-    resolved = strength.copy()
-    resolved[loses] = 0.0
-    return resolved
+    return (conflict & (strength_abs[None, :] >= strength_abs[:, None])).any(axis=1)
 
 
 def _simple_returns(prices: dict) -> pd.DataFrame:
@@ -232,7 +237,34 @@ def _simple_returns(prices: dict) -> pd.DataFrame:
     return closes.pct_change(fill_method=None)
 
 
+# Paneles de w^RP ya calculados. w^RP no depende de θ, pero `sleeve_weights` se llama en cada
+# prueba de Optuna con los mismos retornos: sin el caché, el walk-forward repetiría los mismos
+# miles de ajustes de Spinu. La llave incluye el contenido de los retornos, así que un resultado
+# solo se reutiliza con entradas idénticas.
+_BASE_WEIGHTS_CACHE: dict[tuple, pd.DataFrame] = {}
+_BASE_WEIGHTS_CACHE_SIZE = 256
+
+
 def _base_weights(returns: pd.DataFrame, config: dict, method: str) -> pd.DataFrame:
+    """`_compute_base_weights` con caché por contenido de `returns` y parámetros de rebalanceo."""
+    key = (
+        method,
+        config["cov_method"],
+        config["cov_window"],
+        config["rebalance_band"],
+        config["rebalance_frequency"],
+        tuple(returns.columns),
+        tuple(returns.index[[0, -1]]),
+        hashlib.sha1(np.ascontiguousarray(returns.to_numpy(dtype=float)).tobytes()).hexdigest(),
+    )
+    if key not in _BASE_WEIGHTS_CACHE:
+        if len(_BASE_WEIGHTS_CACHE) >= _BASE_WEIGHTS_CACHE_SIZE:
+            _BASE_WEIGHTS_CACHE.pop(next(iter(_BASE_WEIGHTS_CACHE)))  # descarta el más antiguo
+        _BASE_WEIGHTS_CACHE[key] = _compute_base_weights(returns, config, method)
+    return _BASE_WEIGHTS_CACHE[key].copy()
+
+
+def _compute_base_weights(returns: pd.DataFrame, config: dict, method: str) -> pd.DataFrame:
     """Panel de w^RP vigente por fecha, con rebalanceo híbrido (SPEC_portafolio, Rebalanceo).
 
     En el primer día hábil de cada periodo de `rebalance_frequency` se reestima Σ con los últimos
@@ -311,21 +343,30 @@ def sleeve_weights(
     if unknown:
         raise ValueError(f"regime_multiplier no define los regímenes: {sorted(unknown)}")
 
+    if not all(0 < m <= 1 for m in multiplier.values()):
+        raise ValueError("regime_multiplier debe estar en (0, 1]")
     strength = signals["strength"].reindex(index=dates, columns=tickers).fillna(0.0)
-    base = _base_weights(returns, config, method)
+    strength = strength.to_numpy(copy=True)
+    if (np.abs(strength) > 1 + 1e-12).any():
+        raise ValueError("strength debe estar en [-1, 1]")
+    base = _base_weights(returns, config, method).to_numpy()
     window = config["cov_window"]
     threshold = config.get("conflict_corr_threshold", 0.7)
 
-    target = np.full(base.shape, np.nan)
-    for pos in range(len(dates)):
-        regime, w_rp = labels.iloc[pos], base.iloc[pos]
-        if pd.isna(regime) or w_rp.isna().any():
-            continue
-        s = strength.iloc[pos]
-        if (s > 0).any() and (s < 0).any():  # sin señales opuestas no hay conflicto posible
-            corr = returns.iloc[pos - window + 1 : pos + 1].corr()
-            s = resolve_signal_conflicts(s, corr, threshold)
-        target[pos] = compose_target(w_rp, s, multiplier[regime]).abs().to_numpy()
+    # Misma regla que `resolve_signal_conflicts` + `compose_target`, en arreglos de numpy: este
+    # panel se recalcula en cada prueba de Optuna y el loop con Series por fecha era el cuello de
+    # botella del walk-forward.
+    valid = labels.notna().to_numpy() & np.isfinite(base).all(axis=1)
+    has_conflict = (strength > 0).any(axis=1) & (strength < 0).any(axis=1)
+    for pos in np.flatnonzero(valid & has_conflict):
+        corr = returns.iloc[pos - window + 1 : pos + 1].corr().to_numpy()
+        strength[pos, _conflict_losers(strength[pos], corr, threshold)] = 0.0
+
+    scaled = base * strength
+    gross = np.maximum(1.0, np.abs(scaled).sum(axis=1))
+    m = labels.map(multiplier).to_numpy(dtype=float)
+    target = np.abs(m[:, None] * scaled / gross[:, None])
+    target[~valid] = np.nan
     return pd.DataFrame(target, index=dates, columns=tickers)
 
 

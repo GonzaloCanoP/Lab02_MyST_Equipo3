@@ -435,31 +435,35 @@ def test_conflict_correlation_uses_only_the_trailing_window_up_to_t(synthetic_pr
     import src.portfolio as module
 
     index = synthetic_prices["A0"].index
+    strength = causal_strength(synthetic_prices)
+    regimes = cyclic_regimes(index)
     seen = []
-    original = module.resolve_signal_conflicts
+    original = module._conflict_losers
 
-    def spy(strength, corr, threshold=0.7):
-        seen.append((strength.name, corr.copy()))  # strength.name es la fecha de la fila
-        return original(strength, corr, threshold)
+    def spy(s, rho, threshold):
+        seen.append(rho.copy())
+        return original(s, rho, threshold)
 
-    module.resolve_signal_conflicts = spy
+    module._conflict_losers = spy
     try:
-        sleeve_weights(
-            synthetic_prices,
-            {"strength": causal_strength(synthetic_prices)},
-            cyclic_regimes(index),
-            config_test,
-        )
+        sleeve_weights(synthetic_prices, {"strength": strength}, regimes, config_test)
     finally:
-        module.resolve_signal_conflicts = original
+        module._conflict_losers = original
 
-    assert seen  # hubo días con señales opuestas
+    # Días en que se aplica la política: régimen y w^RP definidos y señales de signo opuesto.
     closes = pd.DataFrame({t: ohlcv["close"] for t, ohlcv in synthetic_prices.items()})
     returns = closes.pct_change(fill_method=None)
+    base = module._base_weights(returns, config_test, "risk_parity")
+    s = strength.reindex(columns=returns.columns)
+    conflict_days = regimes.notna() & base.notna().all(axis=1) & (s > 0).any(axis=1) & (s < 0).any(axis=1)
+    positions = np.flatnonzero(conflict_days.to_numpy())
+
+    assert len(positions) > 0  # hubo días con señales opuestas
+    assert len(seen) == len(positions)
     window = config_test["cov_window"]
-    for date, corr in seen:
-        pos = index.get_loc(date)
-        pd.testing.assert_frame_equal(corr, returns.iloc[pos - window + 1 : pos + 1].corr())
+    for pos, rho in zip(positions, seen):
+        expected = returns.iloc[pos - window + 1 : pos + 1].corr().to_numpy()
+        np.testing.assert_array_equal(rho, expected)
 
 
 # ---------------------------------------------------------------------------------------------
