@@ -59,7 +59,8 @@ Lab02_MyST_Equipo3/
 │   └── test_*.py
 ├── notebooks/
 │   ├── analysis.ipynb          # análisis del portafolio (P4)
-│   └── analisis_P1.ipynb       # datos, motor y pruebas de P1
+│   ├── analisis_P1.ipynb       # datos, motor y pruebas de P1
+│   └── resultados.ipynb        # todos los resultados del proyecto (solo carga results/)
 ├── results/                    # salidas de main.py — en .gitignore
 └── docs/
     ├── figuras/                # PNG generados por main.py
