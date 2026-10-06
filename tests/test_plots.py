@@ -105,11 +105,16 @@ def test_plot_returns_table():
 
 
 def test_plot_sensitivity():
-    sensitivity = pd.DataFrame(
-        {"−20%": [0.1, -0.3, 0.05], "+20%": [-0.2, 0.15, 0.0]},
-        index=["sma_fast", "k_stop", "reward_ratio"],
-    )
-    assert_complete(plots.plot_sensitivity(sensitivity))
+    """Formato largo de `optimize.sensitivity`: régimen, parámetro, factor y ΔCalmar."""
+    rng = np.random.default_rng(0)
+    rows = [
+        {"regime": regime, "parameter": parameter, "factor": factor,
+         "delta_calmar": rng.normal(0, 0.2)}
+        for regime in ("tendencia", "reversion", "crisis")
+        for parameter in ("sma_fast", "k_stop", "reward_ratio")
+        for factor in (0.8, 1.2)
+    ]
+    assert_complete(plots.plot_sensitivity(pd.DataFrame(rows)))
 
 
 def test_plot_cost_curve():

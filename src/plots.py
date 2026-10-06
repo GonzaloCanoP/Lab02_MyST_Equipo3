@@ -60,6 +60,12 @@ def _legend(ax, **kwargs) -> None:
     ax.legend(frameon=False, fontsize=9, labelcolor=INK_SECONDARY, **kwargs)
 
 
+def _figure_legend(fig, handles: list) -> None:
+    """Leyenda debajo de los ejes, para que no tape curvas que recorren todo el periodo."""
+    fig.legend(handles=handles, loc="outside lower center", ncols=min(len(handles), 6),
+               frameon=False, fontsize=9, labelcolor=INK_SECONDARY)
+
+
 def _series_colors(n: int) -> list[str]:
     """Colores categóricos en orden fijo; más de 8 series no se distinguen y se rechazan."""
     if n > len(SERIES_COLORS):
@@ -140,7 +146,7 @@ def plot_equity(curves: dict[str, pd.Series], blocks: dict[str, tuple]) -> Figur
     ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:,.0f}"))
     ax.set(title="Valor del portafolio por bloque", xlabel="Fecha", ylabel="Valor (USD)")
     _style(ax)
-    _legend(ax, loc="upper left")
+    _figure_legend(fig, ax.get_legend_handles_labels()[0])
     return fig
 
 
@@ -194,27 +200,38 @@ def plot_returns_table(tables: dict[str, pd.DataFrame]) -> Figure:
 def plot_sensitivity(sensitivity: pd.DataFrame) -> Figure:
     """Cambio en Calmar al variar cada parámetro ±20% (salida de `sensitivity`).
 
+    Un panel por régimen; en cada uno, una barra por parámetro y factor (×0.8 y ×1.2).
+
     Parameters
     ----------
     sensitivity : pd.DataFrame
-        Índice = parámetro; una columna por escenario (por ejemplo, "−20%" y "+20%") con el ΔCalmar
-        contra el θ* de referencia.
+        Salida de `sensitivity`: una fila por régimen, parámetro y factor, con las columnas
+        `regime`, `parameter`, `factor` y `delta_calmar` (Calmar probado menos Calmar base).
     """
-    fig = Figure(figsize=(9, 0.5 * len(sensitivity) + 1.8), layout="constrained")
-    ax = fig.add_subplot()
-    n = sensitivity.shape[1]
-    height = 0.8 / n
-    positions = np.arange(len(sensitivity))
-    for k, (column, color) in enumerate(zip(sensitivity.columns, _series_colors(n))):
-        ax.barh(positions + (k - (n - 1) / 2) * height, sensitivity[column].to_numpy(),
-                height=height * 0.9, color=color, label=str(column))
-    ax.set_yticks(positions, [str(p) for p in sensitivity.index])
-    ax.axvline(0, color=AXIS, linewidth=1)
-    ax.set(title="Sensibilidad de Calmar a ±20% en cada parámetro", xlabel="Δ Calmar",
-           ylabel="Parámetro")
-    _style(ax)
-    ax.grid(False, axis="y")
-    _legend(ax, loc="best")
+    table = sensitivity.pivot_table(
+        index=["regime", "parameter"], columns="factor", values="delta_calmar", aggfunc="first"
+    )
+    regimes = list(dict.fromkeys(sensitivity["regime"]))
+    factors = list(table.columns)
+    n_params = max(len(table.loc[r]) for r in regimes)
+    fig = Figure(figsize=(4.6 * len(regimes), 0.42 * n_params + 2.2), layout="constrained")
+    axes = fig.subplots(1, len(regimes), squeeze=False, sharex=True)[0]
+    height = 0.8 / len(factors)
+    colors = _series_colors(len(factors))
+    for ax, regime in zip(axes, regimes):
+        panel = table.loc[regime]
+        positions = np.arange(len(panel))
+        for k, (factor, color) in enumerate(zip(factors, colors)):
+            ax.barh(positions + (k - (len(factors) - 1) / 2) * height, panel[factor].to_numpy(),
+                    height=height * 0.9, color=color, label=f"Parámetro × {factor:g}")
+        ax.set_yticks(positions, [str(p) for p in panel.index])
+        ax.axvline(0, color=AXIS, linewidth=1)
+        ax.set(title=REGIME_LABELS.get(regime, str(regime)), xlabel="Δ Calmar",
+               ylabel="Parámetro")
+        _style(ax)
+        ax.grid(False, axis="y")
+    _figure_legend(fig, axes[0].get_legend_handles_labels()[0])
+    fig.suptitle("Sensibilidad de Calmar a ±20% en cada parámetro", color=INK)
     return fig
 
 
@@ -308,8 +325,7 @@ def plot_regime_features(features: pd.DataFrame, labels: pd.Series) -> Figure:
         ax.set(title=label, xlabel=label, ylabel="Densidad")
         _style(ax)
     # Una sola leyenda fuera de los paneles: dentro tapaba las barras en alguno de ellos.
-    fig.legend(handles=axes[0].get_legend_handles_labels()[0], loc="outside lower center",
-               ncols=len(regimes_present), frameon=False, fontsize=9, labelcolor=INK_SECONDARY)
+    _figure_legend(fig, axes[0].get_legend_handles_labels()[0])
     fig.suptitle("Distribución de las variables por régimen (línea punteada: media)", color=INK)
     return fig
 
@@ -332,7 +348,7 @@ def plot_equity_regimes(equity: pd.Series, regimes: pd.Series) -> Figure:
     ax.set(title="Equity con el régimen de mercado vigente", xlabel="Fecha", ylabel="Valor (USD)")
     _style(ax)
     ax.grid(False, axis="x")
-    _legend(ax, handles=[line, *handles], loc="upper left")
+    _figure_legend(fig, [line, *handles])
     return fig
 
 
@@ -549,8 +565,7 @@ def plot_slices(study: optuna.Study) -> Figure:
     if n_infeasible:
         handles.append(Line2D([], [], linestyle="", label=f"Infactibles (−inf): {n_infeasible}"))
     # Leyenda fuera de los paneles para no tapar puntos.
-    fig.legend(handles=handles, loc="outside lower center", ncols=len(handles), frameon=False,
-               fontsize=9, labelcolor=INK_SECONDARY)
+    _figure_legend(fig, handles)
     fig.colorbar(points, ax=list(axes[: len(params)]), label="Número de prueba", shrink=0.8)
     fig.suptitle("Valor objetivo contra cada parámetro", color=INK)
     return fig
