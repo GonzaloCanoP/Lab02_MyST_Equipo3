@@ -345,3 +345,193 @@ def generate_signals(
         "strength": strength,
         "atr": atr,
     }
+
+def sma_macd_vote_correlation(
+    prices: dict,
+    params: dict,
+    config: dict,
+    period: tuple,
+) -> pd.DataFrame:
+    """Mide la correlación entre los votos SMA y MACD.
+
+    Los indicadores se calculan usando toda la historia disponible
+    hasta el final del periodo para conservar el warm-up, pero la
+    correlación se calcula únicamente dentro de ``period``.
+
+    Se reporta una correlación por activo y una correlación agrupada
+    con todas las observaciones disponibles.
+
+    Parameters
+    ----------
+    prices : dict
+        Datos OHLCV por activo.
+    params : dict
+        Parámetros de indicadores. Para la calibración inicial de
+        P2 se usan ``config["base_params"]``.
+    config : dict
+        Configuración del proyecto.
+    period : tuple
+        Fecha inicial y final del periodo de calibración.
+
+    Returns
+    -------
+    pd.DataFrame
+        Índice por ticker más una fila ``pooled`` con columnas
+        ``correlation`` y ``n_obs``.
+    """
+    if not prices:
+        raise ValueError(
+            "prices no puede estar vacío."
+        )
+
+    if len(period) != 2:
+        raise ValueError(
+            "period debe ser (inicio, fin)."
+        )
+
+    start = pd.Timestamp(
+        period[0]
+    )
+
+    end = pd.Timestamp(
+        period[1]
+    )
+
+    if start > end:
+        raise ValueError(
+            "El inicio del periodo no puede "
+            "ser posterior al fin."
+        )
+
+    rows = []
+    pooled_pairs = []
+
+    for ticker, ohlcv in prices.items():
+        history = ohlcv.loc[
+            :end
+        ]
+
+        indicators = compute_indicators(
+            history,
+            params,
+            config,
+        )
+
+        votes = indicator_votes(
+            indicators,
+            params,
+        )
+
+        available = (
+            indicators[
+                "sma_slow"
+            ].notna()
+            & indicators[
+                "macd_hist"
+            ].notna()
+        )
+
+        pair = (
+            votes.loc[
+                available,
+                [
+                    "v_sma",
+                    "v_macd",
+                ],
+            ]
+            .loc[
+                start:end
+            ]
+            .copy()
+        )
+
+        n_obs = len(
+            pair
+        )
+
+        if (
+            n_obs >= 2
+            and pair[
+                "v_sma"
+            ].nunique() > 1
+            and pair[
+                "v_macd"
+            ].nunique() > 1
+        ):
+            correlation = float(
+                pair[
+                    "v_sma"
+                ].corr(
+                    pair[
+                        "v_macd"
+                    ]
+                )
+            )
+        else:
+            correlation = np.nan
+
+        rows.append(
+            {
+                "ticker":
+                    ticker,
+                "correlation":
+                    correlation,
+                "n_obs":
+                    n_obs,
+            }
+        )
+
+        if n_obs > 0:
+            pooled_pairs.append(
+                pair
+            )
+
+    if pooled_pairs:
+        pooled = pd.concat(
+            pooled_pairs,
+            ignore_index=True,
+        )
+
+        if (
+            len(pooled) >= 2
+            and pooled[
+                "v_sma"
+            ].nunique() > 1
+            and pooled[
+                "v_macd"
+            ].nunique() > 1
+        ):
+            pooled_correlation = float(
+                pooled[
+                    "v_sma"
+                ].corr(
+                    pooled[
+                        "v_macd"
+                    ]
+                )
+            )
+        else:
+            pooled_correlation = np.nan
+
+        pooled_n_obs = len(
+            pooled
+        )
+    else:
+        pooled_correlation = np.nan
+        pooled_n_obs = 0
+
+    rows.append(
+        {
+            "ticker":
+                "pooled",
+            "correlation":
+                pooled_correlation,
+            "n_obs":
+                pooled_n_obs,
+        }
+    )
+
+    return (
+        pd.DataFrame(rows)
+        .set_index("ticker")
+    )

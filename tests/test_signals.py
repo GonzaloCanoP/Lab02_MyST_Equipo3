@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from src.signals import (
     compute_indicators,
@@ -7,8 +8,8 @@ from src.signals import (
     confirm_signal,
     signal_strength,
     generate_signals,
+    sma_macd_vote_correlation,
 )
-
 
 def test_confirmation_rule():
 
@@ -190,3 +191,163 @@ def test_no_signal_without_regime(
     assert (
         signals["state"].iloc[n_missing:] != 0
     ).any().any()
+
+def test_sma_macd_vote_correlation(
+    monkeypatch,
+    config_test,
+):
+    dates = pd.bdate_range(
+        "2020-01-01",
+        periods=4,
+    )
+
+    prices = {
+        "A": pd.DataFrame(
+            {
+                "marker": [
+                    1,
+                    1,
+                    1,
+                    1,
+                ]
+            },
+            index=dates,
+        ),
+        "B": pd.DataFrame(
+            {
+                "marker": [
+                    2,
+                    2,
+                    2,
+                    2,
+                ]
+            },
+            index=dates,
+        ),
+    }
+
+    def fake_compute_indicators(
+        ohlcv,
+        params,
+        config,
+    ):
+        return pd.DataFrame(
+            {
+                "sma_slow":
+                    1.0,
+                "macd_hist":
+                    1.0,
+                "marker":
+                    ohlcv[
+                        "marker"
+                    ],
+            },
+            index=ohlcv.index,
+        )
+
+    def fake_indicator_votes(
+        indicators,
+        params,
+    ):
+        marker = int(
+            indicators[
+                "marker"
+            ].iloc[0]
+        )
+
+        if marker == 1:
+            sma = [
+                1,
+                1,
+                -1,
+                -1,
+            ]
+
+            macd = [
+                1,
+                1,
+                -1,
+                -1,
+            ]
+
+        else:
+            sma = [
+                1,
+                -1,
+                1,
+                -1,
+            ]
+
+            macd = [
+                -1,
+                1,
+                -1,
+                1,
+            ]
+
+        return pd.DataFrame(
+            {
+                "v_sma":
+                    sma,
+                "v_macd":
+                    macd,
+                "v_rsi":
+                    0,
+            },
+            index=indicators.index,
+        )
+
+    monkeypatch.setattr(
+        "src.signals.compute_indicators",
+        fake_compute_indicators,
+    )
+
+    monkeypatch.setattr(
+        "src.signals.indicator_votes",
+        fake_indicator_votes,
+    )
+
+    result = (
+        sma_macd_vote_correlation(
+            prices,
+            config_test[
+                "base_params"
+            ],
+            config_test,
+            (
+                "2020-01-01",
+                "2020-01-31",
+            ),
+        )
+    )
+
+    assert result.loc[
+        "A",
+        "correlation",
+    ] == pytest.approx(
+        1.0
+    )
+
+    assert result.loc[
+        "B",
+        "correlation",
+    ] == pytest.approx(
+        -1.0
+    )
+
+    assert result.loc[
+        "pooled",
+        "correlation",
+    ] == pytest.approx(
+        0.0
+    )
+
+    assert result.loc[
+        "A",
+        "n_obs",
+    ] == 4
+
+    assert result.loc[
+        "pooled",
+        "n_obs",
+    ] == 8
