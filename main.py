@@ -83,8 +83,17 @@ CONFIG = {
     "wf_step_months": 1,
     "n_jobs": -1,  # paralelismo entre ventanas, nunca dentro de un estudio
     # Régimen (SPEC_portafolio, P3)
-    "regime_window": 63,
-    "regime_method": "hmm",  # PENDIENTE: lo define P3 en SPEC_portafolio.md
+    "regime_window": 63,  # días hábiles de la ventana móvil de las variables
+    "regime_method": "hmm",  # PENDIENTE: lo define P3 en SPEC_portafolio.md tras train y validation
+    "regime_n_states": 3,  # tendencia, reversion, crisis
+    "regime_first_fit": "2018-01-01",  # primer ajuste; 2017 solo aporta historia de calentamiento
+    "regime_min_fit_obs": 126,  # observaciones válidas mínimas para ajustar un modelo
+    "regime_refit_freq": "MS",  # reajuste al inicio de cada mes con ventana expandible
+    "regime_crisis_quantile": 0.80,  # reglas: volatilidad sobre este cuantil → crisis
+    "regime_trend_quantile": 0.50,  # reglas: eficiencia sobre este cuantil → tendencia
+    "regime_kmeans_n_init": 10,  # reinicios de K-means
+    "regime_hmm_covariance": "full",  # covarianza del GaussianHMM
+    "regime_hmm_n_iter": 200,  # iteraciones máximas de EM del HMM
     # Portafolio (SPEC_portafolio, P4)
     "regime_multiplier": {  # PENDIENTE: lo define P4 en SPEC_portafolio.md
         "tendencia": 1.0,
