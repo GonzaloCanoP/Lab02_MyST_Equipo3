@@ -106,8 +106,8 @@ Hereda todo de `instrucciones/CLAUDE.md`.
 - `notebooks/analisis_P1.ipynb`: datos, recorrido del motor sobre golden cases y contabilidad sintética.
 
 ### PENDIENTE: requiere P2 (`signals.py` y `metrics.py`)
-- [ ] `tests/test_pipeline.py`: sustituir el stub local `causal_signals` por `compute_indicators` →
-      `generate_signals` reales.
+- [x] `tests/test_pipeline.py`: sustituir el stub local `causal_signals` por `compute_indicators` →
+      `generate_signals` reales (integrado con el commit de P2, 8191986).
 - [ ] Corrida base (tarea 4): valores base de SPEC.md, θ único, sobre train; por activo individual y
       pesos iguales. Guardar equity, drawdown y operaciones en `results/` (usa `drawdown_series` de P2).
 - [ ] Curva de sensibilidad a costos: correr `cost_sweep` de P2 con la corrida base.

@@ -99,7 +99,11 @@ def test_pipeline_truncation(
     config_test,
     t,
 ):
-    """El pipeline en t no puede cambiar al agregar datos futuros."""
+    """El pipeline en t no puede cambiar al agregar datos futuros (CLAUDE.md, sección 4).
+
+    Se comparan también las señales en t porque el equity en t solo depende de las señales hasta
+    t − 1: una fuga de una barra en las señales no se vería en el equity.
+    """
 
     (
         full_signals,
