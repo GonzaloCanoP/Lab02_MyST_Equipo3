@@ -14,8 +14,13 @@ from src.backtest import market_impact, run_backtest
 from src.data import audit_prices, block_dates, download_prices, load_prices, load_risk_free
 from src.metrics import compute_metrics, drawdown_series
 from src.optimize import diagnostic_study, select_plateau, walk_forward, wf_efficiency
-from src.portfolio import portfolio_results, sleeve_weights
-from src.plots import plot_drawdown, plot_equity
+from src.plots import plot_drawdown, plot_equity, plot_rebalance_sweep, plot_risk_contributions
+from src.portfolio import (
+       portfolio_results,
+       risk_contribution_plot_frame,
+       sleeve_weights,
+       sweep_plot_frame,
+   )
 from src.regimes import REGIME_NAMES, label_regimes
 from src.signals import generate_signals
 
@@ -266,6 +271,13 @@ def stage_portfolio(prices: dict, rf, regimes, config: dict) -> dict:
        params = dict.fromkeys(REGIME_NAMES, config["base_params"])
        results = portfolio_results(prices, params, regimes, config, 0.0, {"train": blocks["train"]})
        save_results(results, "portafolio", config)
+       save_figure(
+           plot_risk_contributions(risk_contribution_plot_frame(results["risk_contributions"])),
+           "portafolio_contribuciones_riesgo",
+           config,
+       )
+       sweep = sweep_plot_frame(results["sweep"]["train"], blocks["train"], config)
+       save_figure(plot_rebalance_sweep(sweep), "portafolio_barrido_rebalanceo", config)
        return results
 
 
