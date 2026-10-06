@@ -12,8 +12,12 @@ from hmmlearn.hmm import GaussianHMM
 from scipy.special import logsumexp
 from scipy.stats import multivariate_normal
 from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score
+
+from src.data import block_dates
 
 FEATURE_COLUMNS = ["volatility", "efficiency", "autocorr"]
+REGIME_NAMES = ["tendencia", "reversion", "crisis"]
 
 
 @dataclass
@@ -102,7 +106,7 @@ def fit_regime_model(
         `random_state` de K-means y del HMM.
     config : dict
         Usa `regime_n_states`, `regime_crisis_quantile`, `regime_trend_quantile`,
-        `regime_kmeans_n_init`, `regime_hmm_covariance` y `regime_hmm_n_iter`.
+        `regime_kmeans_n_init`, `regime_hmm_covariance`, `regime_hmm_n_iter` y `regime_hmm_n_init`.
 
     Returns
     -------
@@ -131,12 +135,19 @@ def fit_regime_model(
         ).fit(z)
         centers_z = estimator.cluster_centers_
     elif method == "hmm":
-        estimator = GaussianHMM(
-            n_components=config["regime_n_states"],
-            covariance_type=config["regime_hmm_covariance"],
-            n_iter=config["regime_hmm_n_iter"],
-            random_state=seed,
-        ).fit(z)
+        # Con un solo inicio, EM puede quedar en un óptimo local degenerado: dos estados con la
+        # misma media que alternan cada día. Se reinicia con semillas seed, seed + 1, … y se queda
+        # el de mayor verosimilitud sobre la muestra de ajuste (misma idea que n_init de K-means).
+        candidates = [
+            GaussianHMM(
+                n_components=config["regime_n_states"],
+                covariance_type=config["regime_hmm_covariance"],
+                n_iter=config["regime_hmm_n_iter"],
+                random_state=seed + k,
+            ).fit(z)
+            for k in range(config["regime_hmm_n_init"])
+        ]
+        estimator = max(candidates, key=lambda hmm: hmm.score(z))
         centers_z = estimator.means_
     else:
         raise ValueError(f"Método desconocido: {method}")
@@ -277,5 +288,91 @@ def regime_validation(
 
     `blocks` es la salida de `block_dates(config)`; sin él, el % de tiempo se reporta solo para
     toda la muestra.
+
+    SPEC_portafolio, Régimen, "Metas de validación". Se evalúan las fechas con variables y etiqueta:
+
+    - silhouette: sobre las variables estandarizadas con la media y la desviación de esas fechas
+      (métrica descriptiva, no se usa para operar). NaN si hay menos de dos regímenes.
+    - duracion_media: días hábiles promedio de las rachas consecutivas con la misma etiqueta. Las
+      rachas cortadas por el inicio o el fin de la muestra cuentan con su duración observada.
+    - transiciones_por_mes: cambios de etiqueta entre el número de meses calendario de la muestra.
+
+    Parameters
+    ----------
+    features : pd.DataFrame
+        Salida de `regime_features`.
+    labels : pd.Series
+        Etiqueta por fecha (salida de `predict_regimes` o `label_regimes`).
+    blocks : dict, optional
+        Bloques {"train": (inicio, fin), …}, con fechas inclusivas.
+
+    Returns
+    -------
+    dict
+        silhouette, duracion_media, duracion_por_regimen (Series), transiciones_por_mes y
+        pct_tiempo (DataFrame bloque × régimen, en % de los días etiquetados de cada bloque).
     """
-    raise NotImplementedError
+    data = features[FEATURE_COLUMNS].assign(regime=labels).dropna()
+    regime = data["regime"]
+
+    z = (data[FEATURE_COLUMNS] - data[FEATURE_COLUMNS].mean()) / data[FEATURE_COLUMNS].std()
+    silhouette = silhouette_score(z, regime) if regime.nunique() > 1 else np.nan
+
+    # Cada cambio de etiqueta abre una racha nueva; la suma acumulada numera las rachas.
+    run_id = (regime != regime.shift()).cumsum()
+    runs = regime.groupby(run_id).agg(["first", "size"])
+    n_months = data.index.to_period("M").nunique()
+
+    periods = {"muestra": (data.index[0], data.index[-1])} if blocks is None else blocks
+    pct = {
+        name: regime.loc[start:end].value_counts(normalize=True) * 100
+        for name, (start, end) in periods.items()
+    }
+    return {
+        "silhouette": silhouette,
+        "duracion_media": runs["size"].mean(),
+        "duracion_por_regimen": runs.groupby("first")["size"].mean(),
+        "transiciones_por_mes": (len(runs) - 1) / n_months,
+        "pct_tiempo": pd.DataFrame(pct).T.reindex(columns=REGIME_NAMES).fillna(0.0),
+    }
+
+
+def compare_regime_methods(features: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """Tabla comparativa de reglas, K-means y HMM (P3, tareas 2 y 3).
+
+    SPEC_portafolio, Régimen, "Tabla comparativa": cada método se ajusta una vez con las fechas de
+    train y etiqueta validation con el modelo congelado. Test no participa en la elección del
+    método, así que aquí no se etiqueta.
+
+    Parameters
+    ----------
+    features : pd.DataFrame
+        Salida de `regime_features` sobre todos los datos.
+    config : dict
+        Usa `blocks`, `seed` y los valores del clasificador (ver `fit_regime_model`).
+
+    Returns
+    -------
+    pd.DataFrame
+        Índice (método, bloque) con silhouette, duracion_media, transiciones_por_mes y el % de
+        tiempo en cada régimen.
+    """
+    blocks = block_dates(config)
+    train_start, train_end = blocks["train"]
+    rows = {}
+    for method in ("rules", "kmeans", "hmm"):
+        model = fit_regime_model(
+            features.loc[train_start:train_end], method, config["seed"], config
+        )
+        # La recursión del HMM corre de train a validation sin cortes, como correría en vivo.
+        labels = predict_regimes(model, features.loc[train_start : blocks["validation"][1]])
+        for block in ("train", "validation"):
+            start, end = blocks[block]
+            result = regime_validation(features.loc[start:end], labels.loc[start:end])
+            rows[(method, block)] = {
+                "silhouette": result["silhouette"],
+                "duracion_media": result["duracion_media"],
+                "transiciones_por_mes": result["transiciones_por_mes"],
+                **{f"pct_{name}": result["pct_tiempo"].loc["muestra", name] for name in REGIME_NAMES},
+            }
+    return pd.DataFrame(rows).T.rename_axis(["metodo", "bloque"]).astype(float)

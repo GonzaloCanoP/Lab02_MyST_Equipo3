@@ -45,8 +45,12 @@ ajuste: z = (x − μ_ajuste) / σ_ajuste.
   (`regime_crisis_quantile`); si no, tendencia si `efficiency` > su cuantil 0.50
   (`regime_trend_quantile`); si no, reversión.
 - **K-means:** k = 3 (`regime_n_states`), `n_init = 10`, `random_state = seed`.
-- **HMM:** `GaussianHMM` de hmmlearn, 3 estados, covarianza completa, hasta 200 iteraciones de EM,
-  `random_state = seed`. La etiqueta operable es la FILTRADA, con la recursión forward escrita a mano
+- **HMM:** `GaussianHMM` de hmmlearn, 3 estados, covarianza completa, hasta 200 iteraciones de EM.
+  Se ajusta 10 veces (`regime_hmm_n_init`) con `random_state = seed, seed + 1, …` y se queda el de
+  mayor verosimilitud en la muestra de ajuste. Con un solo inicio, EM quedó en train en un óptimo
+  local degenerado: dos estados con la misma media que alternan cada día (672 transiciones en 4 años
+  y log-verosimilitud −3041, contra 14 transiciones y −2432 con los reinicios). La etiqueta operable
+  es la FILTRADA, con la recursión forward escrita a mano
   con `startprob_`, `transmat_` y la densidad gaussiana de cada estado, en logaritmos:
 
       ln α_1(j) = ln π_j + ln b_j(x_1)

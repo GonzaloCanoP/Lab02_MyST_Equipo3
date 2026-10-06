@@ -10,6 +10,7 @@ import textwrap
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.metrics import silhouette_score
 
 import src.regimes as regimes
 from src.regimes import (
@@ -182,3 +183,60 @@ def test_viterbi_only_for_hmm(features, config_test):
         viterbi_path(fit_regime_model(features, "kmeans", 42, config_test), features)
     path = viterbi_path(fit_regime_model(features, "hmm", 42, config_test), features)
     assert set(path.dropna().unique()) <= {"tendencia", "reversion", "crisis"}
+
+
+def test_hmm_restarts_keep_best_likelihood(features, config_test):
+    """Con reinicios, la verosimilitud nunca es menor que la del primer inicio (seed)."""
+    single = dict(config_test, regime_hmm_n_init=1)
+    z_model = fit_regime_model(features, "hmm", 42, config_test)
+    z = ((features.dropna() - z_model.mean) / z_model.std).to_numpy()
+    best = z_model.estimator.score(z)
+    first = fit_regime_model(features, "hmm", 42, single).estimator.score(z)
+    assert best >= first
+
+
+def test_regime_validation_by_hand():
+    """Duración, transiciones y % de tiempo contra un cálculo en papel.
+
+    10 días hábiles (5 en enero y 5 en febrero de 2020): T T T R R C C C C T.
+    Rachas: T3, R2, C4, T1 → duración media 10 / 4 = 2.5; tendencia (3 + 1) / 2 = 2, reversión 2,
+    crisis 4. Transiciones: 3 en 2 meses → 1.5 por mes. Tiempo: T 40%, R 20%, C 40%.
+    Bloque "a" (enero): T 60%, R 40%. Bloque "b" (febrero): T 20%, C 80%.
+    """
+    dates = pd.bdate_range("2020-01-27", periods=10)
+    codes = list("TTTRRCCCCT")
+    names = {"T": "tendencia", "R": "reversion", "C": "crisis"}
+    labels = pd.Series([names[c] for c in codes], index=dates)
+    # Variables separadas por régimen para que la silhouette esté definida.
+    level = {"T": 0.0, "R": 1.0, "C": 5.0}
+    rng = np.random.default_rng(0)
+    features = pd.DataFrame(
+        {col: [level[c] + rng.normal(0, 0.1) for c in codes] for col in FEATURE_COLUMNS},
+        index=dates,
+    )
+    blocks = {"a": (dates[0], dates[4]), "b": (dates[5], dates[9])}
+
+    result = regimes.regime_validation(features, labels, blocks)
+
+    assert result["duracion_media"] == pytest.approx(2.5)
+    assert result["duracion_por_regimen"].to_dict() == pytest.approx(
+        {"tendencia": 2.0, "reversion": 2.0, "crisis": 4.0}
+    )
+    assert result["transiciones_por_mes"] == pytest.approx(1.5)
+    expected_pct = pd.DataFrame(
+        {"tendencia": [60.0, 20.0], "reversion": [40.0, 0.0], "crisis": [0.0, 80.0]},
+        index=["a", "b"],
+    )
+    pd.testing.assert_frame_equal(
+        result["pct_tiempo"], expected_pct, check_names=False, check_dtype=False
+    )
+    z = (features - features.mean()) / features.std()
+    assert result["silhouette"] == pytest.approx(silhouette_score(z, labels))
+
+
+def test_regime_validation_without_blocks_uses_whole_sample(features, config_test):
+    """Sin bloques, el % de tiempo se reporta para toda la muestra y suma 100."""
+    model = fit_regime_model(features, "rules", 42, config_test)
+    result = regimes.regime_validation(features, predict_regimes(model, features))
+    assert list(result["pct_tiempo"].index) == ["muestra"]
+    assert result["pct_tiempo"].loc["muestra"].sum() == pytest.approx(100.0)
