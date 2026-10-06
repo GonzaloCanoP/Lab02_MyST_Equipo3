@@ -1,12 +1,34 @@
-"""Pruebas de régimen (P3): truncamiento de variables y cálculo contra fórmula directa.
+"""Pruebas de régimen (P3): variables, clasificadores y etiqueta filtrada.
 
 Datos sintéticos de `conftest.py`; ninguna prueba lee `data/` ni usa red (CLAUDE.md, sección 8).
 """
 
+import ast
+import inspect
+import textwrap
+
 import numpy as np
+import pandas as pd
 import pytest
 
-from src.regimes import FEATURE_COLUMNS, regime_features
+import src.regimes as regimes
+from src.regimes import (
+    FEATURE_COLUMNS,
+    _filtered_log_probs,
+    _name_states,
+    fit_regime_model,
+    predict_regimes,
+    regime_features,
+    viterbi_path,
+)
+
+METHODS = ["rules", "kmeans", "hmm"]
+
+
+@pytest.fixture
+def features(synthetic_prices, config_test) -> pd.DataFrame:
+    """Variables de régimen sobre los precios sintéticos."""
+    return regime_features(synthetic_prices, config_test)
 
 
 @pytest.mark.parametrize("t", [100, 300, 599])
@@ -58,3 +80,105 @@ def test_efficiency_in_unit_interval(synthetic_prices, config_test):
     """La razón de eficiencia está en [0, 1] por construcción (desigualdad del triángulo)."""
     efficiency = regime_features(synthetic_prices, config_test)["efficiency"].dropna()
     assert ((efficiency >= 0) & (efficiency <= 1)).all()
+
+
+@pytest.mark.parametrize("order", [[0, 1, 2], [2, 0, 1], [1, 2, 0]])
+def test_name_rule_does_not_depend_on_state_number(order):
+    """Los nombres salen de los centroides, no del número de grupo (sin intercambio entre reajustes)."""
+    centers = pd.DataFrame(
+        {
+            "volatility": [0.40, 0.15, 0.12],
+            "efficiency": [0.10, 0.30, 0.05],
+            "autocorr": [-0.05, 0.02, -0.10],
+        }
+    )
+    expected = {0: "crisis", 1: "tendencia", 2: "reversion"}
+    permuted = centers.iloc[order].reset_index(drop=True)
+    names = _name_states(permuted)
+    assert {new: names[new] for new in range(3)} == {
+        new: expected[old] for new, old in enumerate(order)
+    }
+
+
+def test_rules_follow_thresholds(features, config_test):
+    """Reglas: crisis sobre el cuantil de volatilidad; si no, tendencia sobre el de eficiencia."""
+    model = fit_regime_model(features, "rules", config_test["seed"], config_test)
+    valid = features.dropna()
+    vol_q = valid["volatility"].quantile(config_test["regime_crisis_quantile"])
+    eff_q = valid["efficiency"].quantile(config_test["regime_trend_quantile"])
+    expected = np.where(
+        valid["volatility"] > vol_q,
+        "crisis",
+        np.where(valid["efficiency"] > eff_q, "tendencia", "reversion"),
+    )
+    labels = predict_regimes(model, features)
+    assert (labels.loc[valid.index].to_numpy() == expected).all()
+
+
+@pytest.mark.parametrize("t", [10, 200, -1])
+def test_hmm_filtered_equals_smoothed_on_last_day(features, config_test, t):
+    """Valida la recursión forward contra hmmlearn sin usar el futuro.
+
+    En el último día de una muestra no hay futuro, así que la probabilidad filtrada y la suavizada
+    son la misma. Por eso el forward sobre x[:t+1] debe coincidir con la última fila de
+    `predict_proba(x[:t+1])`. Aquí `predict_proba` solo sirve de referencia en la prueba.
+    """
+    model = fit_regime_model(features, "hmm", config_test["seed"], config_test)
+    valid = features.dropna()
+    z = ((valid - model.mean) / model.std).to_numpy()
+    t = t % len(z)
+    filtered = np.exp(_filtered_log_probs(model.estimator, z[: t + 1]))[-1]
+    smoothed = model.estimator.predict_proba(z[: t + 1])[-1]
+    np.testing.assert_allclose(filtered, smoothed, rtol=0, atol=1e-10)
+
+
+@pytest.mark.parametrize("method", METHODS)
+@pytest.mark.parametrize("t", [100, 300, 599])
+def test_label_truncation(features, config_test, method, t):
+    """Con el modelo fijo, la etiqueta en t no cambia al agregar datos posteriores (prueba 4)."""
+    model = fit_regime_model(features, method, config_test["seed"], config_test)
+    full = predict_regimes(model, features)
+    truncated = predict_regimes(model, features.iloc[: t + 1])
+    assert truncated.index[-1] == full.index[t]
+    assert truncated.iloc[-1] == full.iloc[t]
+
+
+def test_labels_nan_without_features(features, config_test):
+    """Sin variables válidas (calentamiento) no hay etiqueta."""
+    model = fit_regime_model(features, "hmm", config_test["seed"], config_test)
+    labels = predict_regimes(model, features)
+    assert labels[features.isna().any(axis=1)].isna().all()
+    assert set(labels.dropna().unique()) <= {"tendencia", "reversion", "crisis"}
+
+
+@pytest.mark.parametrize("method", ["kmeans", "hmm"])
+def test_same_seed_same_labels(features, config_test, method):
+    """Misma semilla, mismas etiquetas (CLAUDE.md, sección 9)."""
+    first = predict_regimes(fit_regime_model(features, method, 42, config_test), features)
+    second = predict_regimes(fit_regime_model(features, method, 42, config_test), features)
+    pd.testing.assert_series_equal(first, second)
+
+
+def test_operable_label_never_calls_library_inference():
+    """La etiqueta operable no llama a predict, predict_proba, score_samples ni decode (checklist P3).
+
+    Se revisan las llamadas en el árbol sintáctico, no el texto, para que un docstring que mencione
+    esos nombres no dé un falso positivo.
+    """
+    forbidden = {"predict", "predict_proba", "score_samples", "decode"}
+    for function in (regimes.predict_regimes, regimes._filtered_log_probs):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+        calls = {
+            node.func.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        assert not calls & forbidden, f"{function.__name__} llama a {calls & forbidden}"
+
+
+def test_viterbi_only_for_hmm(features, config_test):
+    """Viterbi solo existe para el HMM y devuelve los mismos nombres que la filtrada."""
+    with pytest.raises(ValueError):
+        viterbi_path(fit_regime_model(features, "kmeans", 42, config_test), features)
+    path = viterbi_path(fit_regime_model(features, "hmm", 42, config_test), features)
+    assert set(path.dropna().unique()) <= {"tendencia", "reversion", "crisis"}
