@@ -102,8 +102,28 @@ congelado, test sin tocar):**
 - **Meta no cumplida:** ninguno supera silhouette 0.4. Se reporta tal cual: las variables de ventanas
   traslapadas cambian de forma continua y no forman grupos compactos.
 - **% de crisis en validation (51.9%):** con el modelo congelado en train, el umbral de volatilidad
-  (cuantil 0.80 de train) queda por debajo de la volatilidad de 2022. En la operación, `label_regimes`
-  reajusta cada mes con ventana expandible, así que el umbral incorpora 2022 y ese porcentaje baja.
+  (cuantil 0.80 de train) queda por debajo de la volatilidad de 2022. Con el reajuste mensual de
+  `label_regimes` el porcentaje casi no cambia (abajo).
+
+**Etiqueta operable (`label_regimes`, reglas con reajuste mensual), train y validation:**
+
+| Bloque | % tendencia | % reversión | % crisis |
+|---|---|---|---|
+| train | 40.0 | 27.6 | 32.4 |
+| validation | 30.3 | 18.6 | 51.1 |
+
+Duración media 14.2 días (crisis 64.8, tendencia 11.6, reversión 7.6), 1.46 transiciones por mes y
+silhouette 0.155. Primera etiqueta: 2018-01-02, sin huecos después.
+
+- **Más crisis en train que con el modelo congelado (32.4% contra 20.0%):** los primeros umbrales
+  salen de 2017, un año de volatilidad muy baja, así que los episodios de 2018 (febrero y el cuarto
+  trimestre) superan el cuantil 0.80 de la historia disponible.
+- **Validation sigue en 51% de crisis:** 2022 queda sobre el cuantil 0.80 aun con marzo de 2020 en
+  la historia. Con m(crisis) = 0.3 (sección Portafolio), la exposición se reduce la mitad de ese
+  bloque; es una consecuencia del diseño que se declara en el reporte.
+- **Reversión dura 7.6 días en promedio**, por debajo de la meta de 10, aunque la duración media
+  total (14.2) sí la cumple. Se reporta.
+- Estos valores no se usan para cambiar umbrales ni variables: se observaron después de validation.
 
 **Medias por régimen en train (reglas)**, umbrales `volatility` > 0.252 → crisis y `efficiency` >
 0.141 → tendencia:

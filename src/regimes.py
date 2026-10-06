@@ -275,8 +275,44 @@ def viterbi_path(model: object, features: pd.DataFrame) -> pd.Series:
 
 
 def label_regimes(prices: dict, config: dict) -> pd.Series:
-    """Etiqueta causal para todas las fechas, con reajuste mensual y datos hasta cada fecha."""
-    raise NotImplementedError
+    """Etiqueta causal para todas las fechas, con reajuste mensual y datos hasta cada fecha.
+
+    SPEC_portafolio, Régimen, "Esquema de ajuste". En el primer día hábil τ de cada periodo de
+    `regime_refit_freq`, desde `regime_first_fit`, el modelo de `regime_method` se ajusta con las
+    variables válidas de fechas anteriores a τ (ventana expandible) y etiqueta los días del periodo
+    sin reajustar. La etiqueta en t usa un modelo ajustado con datos anteriores a τ ≤ t y variables
+    hasta t, así que no cambia al agregar datos posteriores (prueba 4 del lab).
+
+    Parameters
+    ----------
+    prices : dict[str, pd.DataFrame]
+        Un DataFrame OHLCV por ticker con índice común (salida de `load_prices`).
+    config : dict
+        Usa `regime_method`, `regime_refit_freq`, `regime_first_fit`, `regime_min_fit_obs`, `seed`
+        y lo que piden `regime_features` y `fit_regime_model`.
+
+    Returns
+    -------
+    pd.Series
+        "tendencia", "reversion" o "crisis" por fecha de `prices`; NaN antes del primer ajuste con
+        al menos `regime_min_fit_obs` observaciones. `name="regime"`.
+    """
+    features = regime_features(prices, config)
+    labels = pd.Series(np.nan, index=features.index, dtype=object, name="regime")
+    operable = features.loc[pd.Timestamp(config["regime_first_fit"]) :]
+    for _, period in operable.groupby(pd.Grouper(freq=config["regime_refit_freq"])):
+        if period.empty:
+            continue
+        refit_date, period_end = period.index[0], period.index[-1]
+        fit_sample = features.loc[features.index < refit_date].dropna()
+        if len(fit_sample) < config["regime_min_fit_obs"]:
+            continue
+        model = fit_regime_model(fit_sample, config["regime_method"], config["seed"], config)
+        # Se predice desde el inicio para que la recursión del HMM tenga toda su historia; las
+        # reglas y K-means etiquetan cada día por separado, así que no les afecta.
+        predicted = predict_regimes(model, features.loc[:period_end])
+        labels.loc[refit_date:period_end] = predicted.loc[refit_date:period_end]
+    return labels
 
 
 def regime_validation(

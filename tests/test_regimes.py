@@ -234,6 +234,53 @@ def test_regime_validation_by_hand():
     assert result["silhouette"] == pytest.approx(silhouette_score(z, labels))
 
 
+def _label_config(config: dict, method: str) -> dict:
+    """Config de `label_regimes` con el método dado; el HMM con 2 reinicios para que sea rápido."""
+    return dict(config, regime_method=method, regime_hmm_n_init=2)
+
+
+@pytest.mark.parametrize("method", METHODS)
+@pytest.mark.parametrize("t", [250, 400, 599])
+def test_label_regimes_truncation(synthetic_prices, config_test, method, t):
+    """Prueba 4 del lab sobre la etiqueta operable, con los reajustes mensuales incluidos."""
+    config = _label_config(config_test, method)
+    full = regimes.label_regimes(synthetic_prices, config)
+    truncated = regimes.label_regimes(
+        {ticker: df.iloc[: t + 1] for ticker, df in synthetic_prices.items()}, config
+    )
+    assert truncated.index[-1] == full.index[t]
+    assert truncated.iloc[-1] == full.iloc[t]
+    assert isinstance(full.iloc[t], str)
+
+
+def test_label_regimes_uses_model_fitted_before_month(synthetic_prices, features, config_test):
+    """Los días de un mes salen del modelo ajustado solo con variables anteriores a su inicio."""
+    config = _label_config(config_test, "kmeans")
+    labels = regimes.label_regimes(synthetic_prices, config)
+    month = features.loc["2019-06"]
+    refit_date, month_end = month.index[0], month.index[-1]
+    model = fit_regime_model(
+        features.loc[features.index < refit_date], "kmeans", config["seed"], config
+    )
+    expected = predict_regimes(model, features.loc[:month_end]).loc[refit_date:month_end]
+    pd.testing.assert_series_equal(labels.loc[refit_date:month_end], expected)
+
+
+def test_label_regimes_nan_until_enough_history(synthetic_prices, features, config_test):
+    """La primera etiqueta cae en el primer inicio de mes con regime_min_fit_obs observaciones previas."""
+    labels = regimes.label_regimes(synthetic_prices, _label_config(config_test, "rules"))
+    min_obs = config_test["regime_min_fit_obs"]
+    month_starts = features.groupby(features.index.to_period("M")).head(1).index
+
+    def n_obs_before(date):
+        return len(features.loc[features.index < date].dropna())
+
+    expected_first = next(d for d in month_starts if n_obs_before(d) >= min_obs)
+    assert labels.first_valid_index() == expected_first
+    assert labels.loc[labels.index < expected_first].isna().all()
+    assert labels.loc[expected_first:].notna().all()
+
+
 def test_regime_validation_without_blocks_uses_whole_sample(features, config_test):
     """Sin bloques, el % de tiempo se reporta para toda la muestra y suma 100."""
     model = fit_regime_model(features, "rules", 42, config_test)
