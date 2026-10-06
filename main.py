@@ -84,7 +84,7 @@ CONFIG = {
     "n_jobs": -1,  # paralelismo entre ventanas, nunca dentro de un estudio
     # Régimen (SPEC_portafolio, P3)
     "regime_window": 63,  # días hábiles de la ventana móvil de las variables
-    "regime_method": "hmm",  # PENDIENTE: lo define P3 en SPEC_portafolio.md tras train y validation
+    "regime_method": "rules",  # elegido por P3 con train y validation (SPEC_portafolio, Régimen)
     "regime_n_states": 3,  # tendencia, reversion, crisis
     "regime_first_fit": "2018-01-01",  # primer ajuste; 2017 solo aporta historia de calentamiento
     "regime_min_fit_obs": 126,  # observaciones válidas mínimas para ajustar un modelo

@@ -73,8 +73,52 @@ tiempo en cada régimen, en train y en validation.
 
 Test no participa en la elección.
 
-**Método elegido:** *[PENDIENTE: se completa con la tabla de train y validation]* ·
-**Justificación:** *[PENDIENTE]*
+**Resultados (2026-10-05, `compare_regime_methods`; ajuste en train, validation con el modelo
+congelado, test sin tocar):**
+
+| Método | Bloque | Silhouette | Duración media (días) | Transiciones/mes | % tendencia | % reversión | % crisis |
+|---|---|---|---|---|---|---|---|
+| Reglas | train | 0.23 | 11.2 | 1.85 | 41.7 | 38.3 | 20.0 |
+| Reglas | validation | 0.34 | 25.1 | 0.79 | 27.7 | 20.4 | 51.9 |
+| K-means | train | 0.38 | 17.1 | 1.21 | 31.6 | 61.9 | 6.6 |
+| K-means | validation | 0.30 | 16.2 | 1.25 | 19.4 | 80.6 | 0.0 |
+| HMM | train | 0.20 | 67.2 | 0.29 | 61.1 | 26.4 | 12.5 |
+| HMM | validation | 0.20 | 167.0 | 0.08 | 27.9 | 72.1 | 0.0 |
+
+**Método elegido: reglas** (`regime_method = "rules"`).
+
+**Justificación:**
+- **Aplicación de la regla fijada antes de ver resultados:** los tres cumplen la duración mínima
+  (paso 1). Reglas tiene la mayor silhouette en validation (0.34), pero K-means queda a 0.04, dentro
+  del margen de 0.05 (paso 3). El desempate es por menos transiciones por mes en validation: reglas
+  0.79 contra K-means 1.25.
+- **Respaldo cualitativo, que no decidió la elección:**
+  - K-means y el HMM no marcan ningún día de crisis en 2022–2023: su grupo de crisis quedó
+    definido por el crash de marzo de 2020, que 2022 no alcanza. Reglas sí reconoce como crisis el
+    mercado bajista de 2022.
+  - El HMM es demasiado lento para operarlo: rachas de 167 días en validation, prácticamente un solo
+    régimen en dos años.
+  - Reglas es el método más transparente: dos umbrales explícitos.
+- **Meta no cumplida:** ninguno supera silhouette 0.4. Se reporta tal cual: las variables de ventanas
+  traslapadas cambian de forma continua y no forman grupos compactos.
+- **% de crisis en validation (51.9%):** con el modelo congelado en train, el umbral de volatilidad
+  (cuantil 0.80 de train) queda por debajo de la volatilidad de 2022. En la operación, `label_regimes`
+  reajusta cada mes con ventana expandible, así que el umbral incorpora 2022 y ese porcentaje baja.
+
+**Medias por régimen en train (reglas)**, umbrales `volatility` > 0.252 → crisis y `efficiency` >
+0.141 → tendencia:
+
+| Régimen | volatility | efficiency | autocorr | Duración media (días) |
+|---|---|---|---|---|
+| crisis | 0.386 | 0.132 | −0.204 | 28.9 |
+| tendencia | 0.171 | 0.247 | −0.055 | 10.0 |
+| reversion | 0.197 | 0.080 | −0.023 | 9.4 |
+
+Crisis duplica la volatilidad de los otros dos y tendencia triplica la eficiencia de reversión, así
+que esos nombres quedan respaldados. **Reversión no tiene la `autocorr` más negativa** (verificación
+de la sección "Nombres"): la más negativa es crisis, por los rebotes fuertes de marzo de 2020. En
+reglas, "reversión" describe un mercado sin dirección (rango), no autocorrelación negativa; así se
+declara en el reporte.
 
 ### Esquema de ajuste
 - **Reajuste mensual con ventana expandible** (`regime_refit_freq = "MS"`). En el primer día hábil τ
