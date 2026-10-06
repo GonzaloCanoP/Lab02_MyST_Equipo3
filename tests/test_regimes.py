@@ -299,6 +299,7 @@ def test_regime_results(synthetic_prices, config_test):
 
     assert set(result["comparison"].index.get_level_values("bloque")) == {"train", "validation"}
     assert list(result["validation"]["pct_tiempo"].index) == ["train", "validation", "test"]
+    assert list(result["validation_by_block"].index) == ["train", "validation", "test"]
     assert 0.0 <= result["hmm_agreement"] <= 1.0
     assert result["hmm_filtered"].index.equals(result["hmm_viterbi"].index)
     for corr in result["corr_by_regime"].values():
@@ -354,3 +355,22 @@ def test_regime_validation_without_blocks_uses_whole_sample(features, config_tes
     result = regimes.regime_validation(features, predict_regimes(model, features))
     assert list(result["pct_tiempo"].index) == ["muestra"]
     assert result["pct_tiempo"].loc["muestra"].sum() == pytest.approx(100.0)
+
+
+def test_regime_performance_block_starts_at_previous_close(config_test):
+    """El segundo bloque arranca en el cierre anterior: el retorno de su primer día cuenta."""
+    from src.metrics import compute_metrics
+
+    dates = pd.bdate_range("2018-01-01", periods=20)
+    equity = pd.Series(100.0 * 1.01 ** np.arange(20), index=dates)
+    labels = pd.Series("tendencia", index=dates)
+    trades = pd.DataFrame(columns=["entry_date", "regime_at_entry", "pnl_net"])
+    run = {"oos_equity": equity, "oos_trades": trades}
+    blocks = {"train": (dates[0], dates[9]), "test": (dates[10], dates[19])}
+    config = dict(config_test, blocks=blocks)
+
+    result = regimes.regime_performance({("rolling", True): run}, labels, 0.0, config)
+    test_row = result["theta_comparison"].loc[("rolling", "por régimen", "test")]
+    expected = compute_metrics(equity.iloc[9:], trades)
+    assert test_row["ann_return"] == pytest.approx(expected["ann_return"])
+    assert result["by_regime"].loc[("rolling", "por régimen", "test", "tendencia"), "n_days"] == 10

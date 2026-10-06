@@ -15,7 +15,7 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 
 from src.data import block_dates
-from src.metrics import compute_metrics
+from src.metrics import block_equity, compute_metrics, metrics_by_block
 
 FEATURE_COLUMNS = ["volatility", "efficiency", "autocorr"]
 REGIME_NAMES = ["tendencia", "reversion", "crisis"]
@@ -449,8 +449,10 @@ def regime_results(prices: dict, regimes: pd.Series, config: dict) -> dict:
     Returns
     -------
     dict
-        "features", "comparison", "validation", "market_index", "hmm_filtered", "hmm_viterbi",
-        "hmm_agreement" (fracción de días en que coinciden) y "corr_by_regime" (train).
+        "features", "comparison", "validation" (toda la muestra operable, con % de tiempo por
+        bloque), "validation_by_block" (silhouette, duración media y transiciones por mes en
+        train, validation y test), "market_index", "hmm_filtered", "hmm_viterbi", "hmm_agreement"
+        (fracción de días en que coinciden) y "corr_by_regime" (train).
     """
     blocks = block_dates(config)
     train_start, train_end = blocks["train"]
@@ -473,10 +475,20 @@ def regime_results(prices: dict, regimes: pd.Series, config: dict) -> dict:
         for name in REGIME_NAMES
         if (train_labels == name).sum() > 1
     }
+    operable_labels = regimes.reindex(operable.index)
+    by_block = {}
+    for block, (start, end) in blocks.items():
+        result = regime_validation(operable.loc[start:end], operable_labels.loc[start:end])
+        by_block[block] = {
+            "silhouette": result["silhouette"],
+            "duracion_media": result["duracion_media"],
+            "transiciones_por_mes": result["transiciones_por_mes"],
+        }
     return {
         "features": features,
         "comparison": compare_regime_methods(features, config),
-        "validation": regime_validation(operable, regimes.reindex(operable.index), blocks),
+        "validation": regime_validation(operable, operable_labels, blocks),
+        "validation_by_block": pd.DataFrame(by_block).T,
         "market_index": market_index(prices).loc[train_start:],
         "hmm_filtered": filtered,
         "hmm_viterbi": viterbi,
@@ -512,7 +524,8 @@ def regime_performance(wf_runs: dict, regimes: pd.Series, rf, config: dict) -> d
     """θ por régimen contra θ único y métricas de la estrategia por régimen (P3, tareas 7 y 10).
 
     Usa la equity y los trades fuera de muestra concatenados de cada walk-forward. Los bloques se
-    miden por separado; el primero empieza cuando termina la primera ventana de entrenamiento.
+    miden por separado (`metrics_by_block`), cada uno desde el cierre anterior a su primer día; el
+    primero empieza cuando termina la primera ventana de entrenamiento.
 
     Parameters
     ----------
@@ -537,22 +550,20 @@ def regime_performance(wf_runs: dict, regimes: pd.Series, rf, config: dict) -> d
     for (mode, per_regime), run in wf_runs.items():
         variant = "por régimen" if per_regime else "θ único"
         equity, trades = run["oos_equity"], run["oos_trades"]
-        for block, (start, end) in blocks.items():
-            block_equity = equity.loc[start:end]
-            if len(block_equity) < 2:
-                continue
+        per_block = metrics_by_block(equity, trades, blocks, rf, config["periods_per_year"])
+        for block, metrics in per_block.iterrows():
+            comparison[(mode, variant, block)] = metrics.to_dict()
+            start, end = blocks[block]
+            curve = block_equity(equity, start, end)
             if len(trades):
                 entry = pd.to_datetime(trades["entry_date"])
                 block_trades = trades[(entry >= start) & (entry <= end)]
             else:
                 block_trades = trades
-            comparison[(mode, variant, block)] = compute_metrics(
-                block_equity, block_trades, rf, config["periods_per_year"]
-            )
-            labels = regimes.reindex(block_equity.index)
+            labels = regimes.reindex(curve.index)
             for name in REGIME_NAMES:
                 by_regime[(mode, variant, block, name)] = _metrics_on_regime_days(
-                    block_equity, block_trades, labels, name, rf, config
+                    curve, block_trades, labels, name, rf, config
                 )
     return {
         "theta_comparison": pd.DataFrame(comparison).T.rename_axis(["modo", "variante", "bloque"]),

@@ -9,6 +9,12 @@ import pytest
 from main import CONFIG
 
 
+def pytest_configure(config):
+    """hmmlearn 0.3.3 usa una asignación de `shape` que NumPy 2.5 marca como obsoleta; el aviso
+    sale miles de veces y tapa el resultado. Solo se silencia el que viene de hmmlearn."""
+    config.addinivalue_line("filterwarnings", "ignore::DeprecationWarning:hmmlearn.*")
+
+
 def make_synthetic_prices(
     n_assets: int = 3, n_days: int = 600, seed: int = 42
 ) -> dict[str, pd.DataFrame]:

@@ -293,6 +293,16 @@ def breakeven_winrate(
     }
 
 
+def block_equity(equity: pd.Series, start, end) -> pd.Series:
+    """Equity de un bloque, desde el último cierre anterior a `start` (si existe) hasta `end`.
+
+    Así el retorno del primer día del bloque cuenta: sin el cierre previo, `pct_change` lo pierde.
+    """
+    history = equity.loc[:end]
+    before = history.index[history.index < pd.Timestamp(start)]
+    return history.loc[before[-1] :] if len(before) else history.loc[start:]
+
+
 def metrics_by_block(
     equity: pd.Series,
     trades: pd.DataFrame,
@@ -302,8 +312,9 @@ def metrics_by_block(
 ) -> pd.DataFrame:
     """`compute_metrics` por bloque: train, validation y test por separado (P2, tareas 5 y 20).
 
-    El equity de cada bloque arranca en el último cierre anterior al bloque, para que el retorno
-    del primer día cuente; las operaciones se asignan al bloque de su fecha de entrada.
+    El equity de cada bloque arranca en el último cierre anterior al bloque (`block_equity`); las
+    operaciones se asignan al bloque de su fecha de entrada. Un bloque con menos de dos
+    observaciones se omite.
 
     Parameters
     ----------
@@ -323,15 +334,15 @@ def metrics_by_block(
     """
     rows = {}
     for name, (start, end) in blocks.items():
-        history = equity.loc[:end]
-        before = history.index[history.index < start]
-        block_equity = history.loc[before[-1] :] if len(before) else history.loc[start:]
+        curve = block_equity(equity, start, end)
+        if len(curve) < 2:  # bloque sin datos (por ejemplo, antes de la primera ventana OOS)
+            continue
         if len(trades):
             entry = pd.to_datetime(trades["entry_date"])
             block_trades = trades[(entry >= start) & (entry <= end)]
         else:
             block_trades = trades
-        rows[name] = compute_metrics(block_equity, block_trades, rf, periods_per_year)
+        rows[name] = compute_metrics(curve, block_trades, rf, periods_per_year)
     return pd.DataFrame.from_dict(rows, orient="index")
 
 
