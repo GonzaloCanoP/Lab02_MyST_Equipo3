@@ -76,6 +76,7 @@ def test_sensitivity_varies_each_parameter(monkeypatch, config_test):
             for value in regime_params.values()
         )
         return None, {"calmar": score}
+
     monkeypatch.setattr("src.optimize._evaluate_params", fake_evaluate)
     result = sensitivity(params, prices, regimes, config_test, pct=0.20)
     assert len(result) == 18
@@ -124,7 +125,7 @@ def test_evaluate_on_period_truncates_and_masks(monkeypatch, config_test):
     mask = captured["entry_mask"]
     assert captured["last"] <= pd.Timestamp("2020-04-30")
     assert mask[mask].index.min() >= pd.Timestamp("2020-03-01")
-    assert not mask.loc[: "2020-02-28"].any()
+    assert not mask.loc[:"2020-02-28"].any()
     assert captured["period"] == (pd.Timestamp("2020-03-01"), pd.Timestamp("2020-04-30"))
 
 
@@ -143,6 +144,7 @@ def test_single_indicator_comparison(monkeypatch, config_test):
     def fake_evaluate_params(params_by_regime, prices, regimes, config, indicator=None, **kwargs):
         n_trades, calmar = scores[indicator]
         return (FakeResult(n_trades), {"calmar": calmar, "n_trades": n_trades})
+
     monkeypatch.setattr("src.optimize._evaluate_params", fake_evaluate_params)
     result = single_indicator_comparison(
         {"tendencia": config_test["base_params"]}, None, None, config_test
@@ -159,6 +161,7 @@ def test_cost_sweep_finds_breakeven(monkeypatch, config_test):
     class FakeResult:
         def __init__(self):
             self.trades = pd.DataFrame({"pnl_net": [1.0, -1.0]})
+
     original_commission = config_test["commission"]
     original_slippage = config_test["slippage"]
 
@@ -166,6 +169,7 @@ def test_cost_sweep_finds_breakeven(monkeypatch, config_test):
         round_trip = 2.0 * (config["commission"] + config["slippage"]) * 10_000.0
         net_return = 0.05 - round_trip / 1000.0
         return (FakeResult(), {"ann_return": net_return, "calmar": 1.0, "n_trades": 2})
+
     monkeypatch.setattr("src.optimize._evaluate_params", fake_evaluate)
     result = cost_sweep(
         {"tendencia": config_test["base_params"]}, None, None, config_test, [100, 0, 50, 25, 75]
@@ -205,6 +209,7 @@ def test_diagnostic_study_runs_requested_trials(
     config["embargo_days"] = 5
     config["min_trades_per_window"] = 24
     seen_masks = []
+
     class FakeResult:
         def __init__(self):
             self.trades = pd.DataFrame(index=range(30))
@@ -212,6 +217,7 @@ def test_diagnostic_study_runs_requested_trials(
     def fake_evaluate(params_by_regime, prices, regimes, config, entry_mask=None, period=None):
         seen_masks.append(entry_mask.copy())
         return (FakeResult(), {"calmar": 1.25, "n_trades": 30})
+
     monkeypatch.setattr("src.optimize._evaluate_params", fake_evaluate)
     study = diagnostic_study(prices, config, sampler=sampler_name, n_trials=3, seed=42)
     assert isinstance(study.sampler, sampler_type)
@@ -233,12 +239,14 @@ def test_diagnostic_study_rejects_low_activity(monkeypatch, config_test):
     config["blocks"] = {"train": ("2020-01-01", "2020-06-30")}
     config["embargo_days"] = 5
     config["min_trades_per_window"] = 24
+
     class FakeResult:
         def __init__(self):
             self.trades = pd.DataFrame(index=range(23))
 
     def fake_evaluate(params_by_regime, prices, regimes, config, entry_mask=None, period=None):
         return (FakeResult(), {"calmar": 10.0, "n_trades": 23})
+
     monkeypatch.setattr("src.optimize._evaluate_params", fake_evaluate)
     study = diagnostic_study(prices, config, sampler="random", n_trials=1, seed=42)
     trial = study.trials[0]
@@ -265,6 +273,7 @@ def test_optimize_regime_prorates_activity(monkeypatch, config_test):
     def fake_evaluate(params_by_regime, prices, regimes, config, entry_mask=None, period=None):
         seen_masks.append(entry_mask.copy())
         return (None, {"calmar": 1.0, "ann_return": 0.10, "n_trades": 20})
+
     monkeypatch.setattr("src.optimize._evaluate_params", fake_evaluate)
     result = optimize_regime(
         prices,
@@ -527,3 +536,39 @@ def test_infeasible_regime_falls_back_to_single_theta(monkeypatch, config_test):
     assert fold["cash_regimes"] == []
     assert all(params == base for params in fold["params_by_regime"].values())
     assert fold["trade_params"]["k_stop"].eq(base["k_stop"]).all()
+
+
+def test_surface_grid_uses_top_two_parameters(monkeypatch, config_test):
+    """Las dos dimensiones de la cuadrícula son las de mayor importancia; el resto queda fijo."""
+    from src.optimize import surface_grid
+
+    def make_study(seed):
+        study = optuna.create_study(
+            direction="maximize", sampler=optuna.samplers.RandomSampler(seed)
+        )
+        ranges = config_test["search_ranges"]
+        # El valor depende casi solo de k_stop y sma_slow.
+        study.optimize(
+            lambda t: (
+                t.suggest_float("k_stop", *ranges["k_stop"]) * 10
+                + t.suggest_int("sma_slow", *ranges["sma_slow"]) / 10
+                + t.suggest_float("reward_ratio", *ranges["reward_ratio"]) * 0.01
+            ),
+            n_trials=40,
+        )
+        return study
+
+    seen = []
+
+    def fake_score(params, setup, config):
+        seen.append(params)
+        return params["k_stop"], 30
+
+    monkeypatch.setattr("src.optimize._diagnostic_setup", lambda prices, config: {})
+    monkeypatch.setattr("src.optimize._diagnostic_score", fake_score)
+    random_study = make_study(1)
+    out = surface_grid(None, config_test, random_study, make_study(2), seed=42, n_points=4)
+    assert {out["x"], out["y"]} == {"k_stop", "sma_slow"}
+    assert len(out["grid"]) == 16
+    assert out["fixed"] == random_study.best_trial.params
+    assert all(p["reward_ratio"] == out["fixed"]["reward_ratio"] for p in seen)

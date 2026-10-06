@@ -239,6 +239,63 @@ def _suggest_params(trial: optuna.Trial, config: dict) -> dict:
     return params
 
 
+def _diagnostic_setup(prices: dict, config: dict) -> dict:
+    """Entradas fijas de los estudios de diagnóstico sobre todo train (P2, tareas 13 y 14).
+
+    Precios recortados al fin de train, régimen ignorado (una sola etiqueta: la de mayor
+    multiplicador, como en la corrida base), entradas solo dentro de train salvo los últimos
+    `embargo_days` días (purga y embargo) y la actividad mínima escalada a 4 años.
+    """
+    train_start = pd.Timestamp(config["blocks"]["train"][0])
+    train_end = pd.Timestamp(config["blocks"]["train"][1])
+    window_prices = {ticker: data.loc[:train_end].copy() for ticker, data in prices.items()}
+    index = next(iter(window_prices.values())).index
+    train_dates = index[(index >= train_start) & (index <= train_end)]
+
+    if len(train_dates) == 0:
+        raise ValueError("No hay observaciones dentro de Train.")
+    embargo_days = int(config["embargo_days"])
+
+    if embargo_days < 0:
+        raise ValueError("embargo_days no puede ser negativo.")
+
+    if embargo_days >= len(train_dates):
+        raise ValueError("El embargo consume toda la ventana de Train.")
+    entry_mask = pd.Series(False, index=index, dtype=bool)
+    entry_mask.loc[train_dates] = True
+    if embargo_days > 0:
+        entry_mask.loc[train_dates[-embargo_days:]] = False
+    single_regime = max(config["regime_multiplier"], key=config["regime_multiplier"].get)
+    return {
+        "prices": window_prices,
+        "labels": pd.Series(single_regime, index=index, name="regime"),
+        "single_regime": single_regime,
+        "entry_mask": entry_mask,
+        "period": (train_start, train_end),
+        "minimum_trades": _minimum_trades(train_dates, len(train_dates), config),
+    }
+
+
+def _diagnostic_score(params: dict, setup: dict, config: dict) -> tuple[float, int]:
+    """Calmar de θ sobre train con costos; −inf si no cumple la actividad mínima (S08).
+
+    Un Calmar no finito (MDD = 0) también se trata como infactible.
+    """
+    _, metrics = _evaluate_params(
+        {setup["single_regime"]: params},
+        setup["prices"],
+        setup["labels"],
+        config,
+        entry_mask=setup["entry_mask"],
+        period=setup["period"],
+    )
+    n_trades = int(metrics["n_trades"])
+    calmar = float(metrics["calmar"])
+    if n_trades < setup["minimum_trades"] or not np.isfinite(calmar):
+        return -np.inf, n_trades
+    return calmar, n_trades
+
+
 def diagnostic_study(
     prices: dict, config: dict, sampler: str, n_trials: int, seed: int
 ) -> optuna.Study:
@@ -266,60 +323,18 @@ def diagnostic_study(
     else:
         optuna_sampler = optuna.samplers.TPESampler(seed=seed)
     study = optuna.create_study(direction="maximize", sampler=optuna_sampler)
-    train_start = pd.Timestamp(config["blocks"]["train"][0])
-    train_end = pd.Timestamp(config["blocks"]["train"][1])
-    window_prices = {ticker: data.loc[:train_end].copy() for ticker, data in prices.items()}
-    first_ticker = next(iter(window_prices))
-    index = window_prices[first_ticker].index
-    train_dates = index[(index >= train_start) & (index <= train_end)]
-
-    if len(train_dates) == 0:
-        raise ValueError("No hay observaciones dentro de Train.")
-    embargo_days = int(config["embargo_days"])
-
-    if embargo_days < 0:
-        raise ValueError("embargo_days no puede ser negativo.")
-
-    if embargo_days >= len(train_dates):
-        raise ValueError("El embargo consume toda la ventana de Train.")
-    entry_mask = pd.Series(False, index=index, dtype=bool)
-    entry_mask.loc[train_dates] = True
-
-    if embargo_days > 0:
-        embargo_dates = train_dates[-embargo_days:]
-        entry_mask.loc[embargo_dates] = False
-
-    # El diagnóstico usa theta único sin diferenciar regímenes.
-    # Se usa el régimen con mayor multiplicador, equivalente al
-    # caso neutral de la corrida base.
-    single_regime = max(config["regime_multiplier"], key=config["regime_multiplier"].get)
-    regime_labels = pd.Series(single_regime, index=index, name="regime")
-    minimum_trades = _minimum_trades(train_dates, len(train_dates), config)
+    setup = _diagnostic_setup(prices, config)
+    train_start, train_end = setup["period"]
 
     def objective(trial: optuna.Trial) -> float:
-        params = _suggest_params(trial, config)
-        params_by_regime = {single_regime: params}
-        result, metrics = _evaluate_params(
-            params_by_regime,
-            window_prices,
-            regime_labels,
-            config,
-            entry_mask=entry_mask,
-            period=(train_start, train_end),
-        )
-        n_trades = int(metrics["n_trades"])
+        value, n_trades = _diagnostic_score(_suggest_params(trial, config), setup, config)
         trial.set_user_attr("n_trades", n_trades)
-        trial.set_user_attr("minimum_trades", minimum_trades)
-        if n_trades < minimum_trades:
-            trial.set_user_attr("feasible", False)
-            return -np.inf
-        calmar = float(metrics["calmar"])
-        if not np.isfinite(calmar):
-            trial.set_user_attr("feasible", False)
-            return -np.inf
-        trial.set_user_attr("feasible", True)
-        trial.set_user_attr("calmar", calmar)
-        return calmar
+        trial.set_user_attr("minimum_trades", setup["minimum_trades"])
+        trial.set_user_attr("feasible", bool(np.isfinite(value)))
+        if np.isfinite(value):
+            trial.set_user_attr("calmar", value)
+        return value
+
     start_time = time.perf_counter()
     study.optimize(objective, n_trials=n_trials, n_jobs=1)
     elapsed_seconds = time.perf_counter() - start_time
@@ -340,8 +355,8 @@ def diagnostic_study(
     study.set_user_attr("elapsed_seconds", float(elapsed_seconds))
     study.set_user_attr("train_start", str(train_start.date()))
     study.set_user_attr("train_end", str(train_end.date()))
-    study.set_user_attr("embargo_days", embargo_days)
-    study.set_user_attr("minimum_trades", minimum_trades)
+    study.set_user_attr("embargo_days", int(config["embargo_days"]))
+    study.set_user_attr("minimum_trades", setup["minimum_trades"])
 
     return study
 
@@ -413,6 +428,77 @@ def select_plateau(study: optuna.Study, top_frac: float = 0.10) -> dict:
     medoid_position = int(np.argmin(total_distance))
 
     return dict(top_trials[medoid_position].params)
+
+
+def _feasible_trials(study: optuna.Study) -> list[optuna.trial.FrozenTrial]:
+    """Pruebas completas con valor finito (las −inf no cumplen la actividad mínima)."""
+    return [
+        trial
+        for trial in study.get_trials(deepcopy=False, states=[optuna.trial.TrialState.COMPLETE])
+        if trial.value is not None and np.isfinite(trial.value)
+    ]
+
+
+def surface_grid(
+    prices: dict,
+    config: dict,
+    random_study: optuna.Study,
+    tpe_study: optuna.Study,
+    seed: int,
+    n_points: int = 8,
+) -> dict:
+    """Cuadrícula del Calmar sobre las dos dimensiones más influyentes (P2, tarea 13).
+
+    Las dos dimensiones salen de la importancia fANOVA del estudio TPE (solo pruebas factibles,
+    con la semilla del proyecto); el resto de θ queda fijo en la mejor prueba factible del random
+    search. Cada punto se evalúa igual que una prueba del diagnóstico: train, θ único, costos y
+    −inf si no cumple la actividad mínima. No existe una superficie completa en más de 2
+    dimensiones: esta es un corte del espacio de 9.
+
+    Parameters
+    ----------
+    prices, config
+        Datos y `CONFIG`.
+    random_study, tpe_study : optuna.Study
+        Salidas de `diagnostic_study` con "random" y "tpe".
+    seed : int
+        Semilla de fANOVA.
+    n_points : int
+        Valores por dimensión (los enteros repetidos tras redondear se eliminan).
+
+    Returns
+    -------
+    dict
+        "grid" (DataFrame con una columna por dimensión y "calmar"), "x", "y" (nombres de las
+        dimensiones) y "fixed" (θ del random search).
+    """
+    feasible_random, feasible_tpe = _feasible_trials(random_study), _feasible_trials(tpe_study)
+    if not feasible_random or not feasible_tpe:
+        raise ValueError("Los estudios no tienen pruebas factibles.")
+    importance_study = optuna.create_study(directions=tpe_study.directions)
+    importance_study.add_trials(feasible_tpe)
+    importances = optuna.importance.get_param_importances(
+        importance_study, evaluator=optuna.importance.FanovaImportanceEvaluator(seed=seed)
+    )
+    x, y = list(importances)[:2]  # ordenadas de mayor a menor
+    fixed = dict(max(feasible_random, key=lambda trial: trial.value).params)
+    axes = {}
+    for name in (x, y):
+        low, high = config["search_ranges"][name]
+        values = np.linspace(low, high, n_points)
+        axes[name] = (
+            np.unique(np.round(values).astype(int)) if _PARAMETER_KINDS[name] == "int" else values
+        )
+    setup = _diagnostic_setup(prices, config)
+    rows = []
+    for x_value in axes[x]:
+        for y_value in axes[y]:
+            params = {**fixed, x: x_value.item(), y: y_value.item()}
+            calmar, n_trades = _diagnostic_score(params, setup, config)
+            rows.append(
+                {x: x_value.item(), y: y_value.item(), "calmar": calmar, "n_trades": n_trades}
+            )
+    return {"grid": pd.DataFrame(rows), "x": x, "y": y, "fixed": fixed}
 
 
 def _candidate_params_by_regime(candidate: dict, regime: str | None, config: dict) -> dict:
@@ -537,6 +623,7 @@ def optimize_regime(
             return -np.inf
         trial.set_user_attr("feasible", True)
         return calmar
+
     start_time = time.perf_counter()
     study.optimize(objective, n_trials=int(config["n_trials_wf"]), n_jobs=1)
     elapsed_seconds = time.perf_counter() - start_time
@@ -1168,7 +1255,11 @@ def single_indicator_comparison(
             params_by_regime, prices, regimes, config, period, indicator=indicator
         )
         rows.append(
-            {"strategy": strategy, "n_trades": int(metrics["n_trades"]), "calmar": metrics["calmar"]}
+            {
+                "strategy": strategy,
+                "n_trades": int(metrics["n_trades"]),
+                "calmar": metrics["calmar"],
+            }
         )
 
     return pd.DataFrame(rows).set_index("strategy")

@@ -291,3 +291,69 @@ def breakeven_winrate(
         "payoff_ratio": float(payoff_ratio),
         "cost_in_r": float(cost_in_r),
     }
+
+
+def metrics_by_block(
+    equity: pd.Series,
+    trades: pd.DataFrame,
+    blocks: dict[str, tuple],
+    rf: pd.Series | float = 0.0,
+    periods_per_year: int = 252,
+) -> pd.DataFrame:
+    """`compute_metrics` por bloque: train, validation y test por separado (P2, tareas 5 y 20).
+
+    El equity de cada bloque arranca en el último cierre anterior al bloque, para que el retorno
+    del primer día cuente; las operaciones se asignan al bloque de su fecha de entrada.
+
+    Parameters
+    ----------
+    equity : pd.Series
+        Curva de equity continua.
+    trades : pd.DataFrame
+        Operaciones cerradas (`BacktestResult.trades`).
+    blocks : dict[str, tuple]
+        Salida de `block_dates(config)`.
+    rf, periods_per_year
+        Como en `compute_metrics`.
+
+    Returns
+    -------
+    pd.DataFrame
+        Un renglón por bloque con las métricas de `compute_metrics`.
+    """
+    rows = {}
+    for name, (start, end) in blocks.items():
+        history = equity.loc[:end]
+        before = history.index[history.index < start]
+        block_equity = history.loc[before[-1] :] if len(before) else history.loc[start:]
+        if len(trades):
+            entry = pd.to_datetime(trades["entry_date"])
+            block_trades = trades[(entry >= start) & (entry <= end)]
+        else:
+            block_trades = trades
+        rows[name] = compute_metrics(block_equity, block_trades, rf, periods_per_year)
+    return pd.DataFrame.from_dict(rows, orient="index")
+
+
+def buy_and_hold_equity(prices: dict, config: dict, start, end) -> pd.Series:
+    """Benchmark buy & hold: 1/n del capital en cada activo, sin rebalanceo (P2, tarea 20).
+
+    Compra al Open del primer día del periodo con los mismos costos de entrada de la estrategia
+    (slippage en contra y comisión, SPEC punto 6) y valúa al Close; no se vende, así que no hay
+    costo de salida (como las posiciones abiertas al fin de la muestra).
+
+    Returns
+    -------
+    pd.Series
+        Equity al cierre de cada fecha del periodo.
+    """
+    capital = float(config["initial_capital"])
+    budget = capital / len(prices)
+    cost_per_share = 1 + config["commission"]
+    value = 0.0
+    for ohlcv in prices.values():
+        window = ohlcv.loc[start:end]
+        entry = window["open"].iloc[0] * (1 + config["slippage"])
+        shares = budget / (entry * cost_per_share)
+        value = value + shares * window["close"]
+    return value.rename("buy_and_hold")

@@ -97,3 +97,36 @@ def test_breakeven_winrate_matches_spec_formula():
     assert result["observed_win_rate"] == pytest.approx(0.5)
     assert result["payoff_ratio"] == pytest.approx(2.0)
     assert result["empirical_breakeven_win_rate"] == pytest.approx(1.0 / 3.0)
+
+
+def test_metrics_by_block_starts_at_previous_close():
+    """El bloque usa el cierre anterior como base y las operaciones por fecha de entrada."""
+    from src.metrics import metrics_by_block
+
+    index = pd.bdate_range("2020-01-01", periods=6)
+    equity = pd.Series([100.0, 110.0, 121.0, 108.9, 119.79, 131.769], index=index)
+    trades = pd.DataFrame({"entry_date": [index[1], index[4]], "pnl_net": [10.0, -5.0]})
+    blocks = {"a": (index[0], index[2]), "b": (index[3], index[5])}
+    table = metrics_by_block(equity, trades, blocks)
+    # Bloque b: 121 → 108.9 → 119.79 → 131.769, tres retornos (−10%, +10%, +10%).
+    expected_b = compute_metrics(equity.iloc[2:], trades.iloc[[1]])
+    assert table.loc["b", "ann_return"] == pytest.approx(expected_b["ann_return"], abs=1e-12)
+    assert table.loc["b", "max_drawdown"] == pytest.approx(-0.10, abs=1e-12)
+    assert table.loc["a", "n_trades"] == 1
+    assert table.loc["b", "win_rate"] == 0.0
+
+
+def test_buy_and_hold_equity_by_hand(config_test):
+    """Dos activos, 50/50: compra al Open con slippage y comisión, valúa al Close."""
+    from src.metrics import buy_and_hold_equity
+
+    index = pd.bdate_range("2020-01-01", periods=2)
+    prices = {
+        "X": pd.DataFrame({"open": [100.0, 0], "close": [110.0, 120.0]}, index=index),
+        "Y": pd.DataFrame({"open": [50.0, 0], "close": [50.0, 40.0]}, index=index),
+    }
+    config = dict(config_test, initial_capital=1000.0, commission=0.001, slippage=0.0)
+    equity = buy_and_hold_equity(prices, config, index[0], index[1])
+    # X: 500 / (100 · 1.001) = 4.995005 acciones; Y: 500 / (50 · 1.001) = 9.990010 acciones.
+    assert equity.iloc[0] == pytest.approx(4.995005 * 110 + 9.990010 * 50, abs=1e-4)
+    assert equity.iloc[1] == pytest.approx(4.995005 * 120 + 9.990010 * 40, abs=1e-4)
