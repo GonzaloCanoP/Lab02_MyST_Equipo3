@@ -48,6 +48,18 @@ def _market_log_returns(prices: dict[str, pd.DataFrame]) -> pd.Series:
     return np.log1p(simple).rename("market")
 
 
+def market_index(prices: dict[str, pd.DataFrame]) -> pd.Series:
+    """Nivel del índice equiponderado, base 1 en la primera fecha (para las figuras de régimen).
+
+    Es la misma serie de mercado de la que salen las variables (SPEC_portafolio, Régimen):
+    I_t = exp(Σ ℓ_k), con ℓ del primer día igual a 0 porque no hay retorno previo. Un hueco
+    posterior queda NaN en esa fecha (no se rellena).
+    """
+    log_ret = _market_log_returns(prices)
+    log_ret.iloc[0] = 0.0
+    return np.exp(log_ret.cumsum()).rename("market_index")
+
+
 def regime_features(prices: dict, config: dict) -> pd.DataFrame:
     """Variables de régimen sobre la serie de mercado con ventana móvil hacia atrás.
 
