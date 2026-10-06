@@ -12,6 +12,7 @@ from src.optimize import (
     select_plateau,
     sensitivity,
     single_indicator_comparison,
+    walk_forward,
 )
 
 def test_search_space_matches_config(
@@ -983,3 +984,382 @@ def test_optimize_regime_uses_single_fallback(
     assert result[
         "n_regime_days"
     ] == 10
+
+def _wf_prices():
+    index = pd.bdate_range(
+        "2020-01-01",
+        "2020-09-30",
+    )
+
+    return {
+        "AAPL": pd.DataFrame(
+            index=index
+        )
+    }
+
+
+def _fake_wf_fold(
+    window,
+    prices,
+    regimes,
+    config,
+    per_regime,
+    seed,
+):
+    index = next(
+        iter(prices.values())
+    ).index
+
+    test_dates = index[
+        (
+            index
+            >= window[
+                "test_start"
+            ]
+        )
+        & (
+            index
+            <= window[
+                "test_end"
+            ]
+        )
+    ]
+
+    equity = pd.Series(
+        float(
+            config[
+                "initial_capital"
+            ]
+        ),
+        index=test_dates,
+    )
+
+    params = {
+        "tendencia": {
+            "seed": seed
+        }
+    }
+
+    trade_params = pd.DataFrame(
+        {
+            "k_stop": 2.0,
+        },
+        index=test_dates,
+    )
+
+    return {
+        "fold":
+            window["fold"],
+        "seed":
+            seed,
+        "train_start":
+            window[
+                "train_start"
+            ],
+        "train_end":
+            window[
+                "train_end"
+            ],
+        "test_start":
+            window[
+                "test_start"
+            ],
+        "test_end":
+            window[
+                "test_end"
+            ],
+        "params_by_regime":
+            params,
+        "optimization":
+            {},
+        "is_metrics":
+            {
+                "ann_return": 0.10
+            },
+        "oos_metrics":
+            {
+                "ann_return": 0.08
+            },
+        "oos_equity":
+            equity,
+        "oos_trades":
+            pd.DataFrame(),
+        "trade_params":
+            trade_params,
+        "n_trials_total":
+            150,
+        "elapsed_seconds":
+            0.1,
+    }
+
+def test_walk_forward_rolling_windows(
+    monkeypatch,
+    config_test,
+):
+    prices = _wf_prices()
+
+    index = next(
+        iter(prices.values())
+    ).index
+
+    regimes = pd.Series(
+        "tendencia",
+        index=index,
+    )
+
+    config = dict(
+        config_test
+    )
+
+    config["blocks"] = {
+        "train": (
+            "2020-01-01",
+            "2020-06-30",
+        ),
+        "validation": (
+            "2020-07-01",
+            "2020-08-31",
+        ),
+        "test": (
+            "2020-09-01",
+            "2020-09-30",
+        ),
+    }
+
+    config[
+        "wf_train_months"
+    ] = 6
+
+    config[
+        "wf_test_months"
+    ] = 1
+
+    config[
+        "wf_step_months"
+    ] = 1
+
+    config[
+        "n_jobs"
+    ] = 1
+
+    monkeypatch.setattr(
+        "src.optimize._run_walk_forward_fold",
+        _fake_wf_fold,
+    )
+
+    result = walk_forward(
+        prices,
+        regimes,
+        config,
+        mode="rolling",
+        per_regime=False,
+    )
+
+    assert result[
+        "n_folds"
+    ] == 3
+
+    first = result[
+        "folds"
+    ][0]
+
+    second = result[
+        "folds"
+    ][1]
+
+    assert first[
+        "train_start"
+    ] == pd.Timestamp(
+        "2020-01-01"
+    )
+
+    assert first[
+        "train_end"
+    ] == pd.Timestamp(
+        "2020-06-30"
+    )
+
+    assert first[
+        "test_start"
+    ] == pd.Timestamp(
+        "2020-07-01"
+    )
+
+    assert first[
+        "test_end"
+    ] == pd.Timestamp(
+        "2020-07-31"
+    )
+
+    assert second[
+        "train_start"
+    ] == pd.Timestamp(
+        "2020-02-01"
+    )
+
+    assert second[
+        "train_end"
+    ] < second[
+        "test_start"
+    ]
+
+    assert [
+        fold["seed"]
+        for fold
+        in result["folds"]
+    ] == [
+        42,
+        43,
+        44,
+    ]
+
+    assert (
+        result[
+            "oos_equity"
+        ].index.is_unique
+    )
+
+def test_walk_forward_anchored_keeps_start(
+    monkeypatch,
+    config_test,
+):
+    prices = _wf_prices()
+
+    index = next(
+        iter(prices.values())
+    ).index
+
+    regimes = pd.Series(
+        "tendencia",
+        index=index,
+    )
+
+    config = dict(
+        config_test
+    )
+
+    config["blocks"] = {
+        "train": (
+            "2020-01-01",
+            "2020-06-30",
+        ),
+        "validation": (
+            "2020-07-01",
+            "2020-08-31",
+        ),
+        "test": (
+            "2020-09-01",
+            "2020-09-30",
+        ),
+    }
+
+    config[
+        "n_jobs"
+    ] = 1
+
+    monkeypatch.setattr(
+        "src.optimize._run_walk_forward_fold",
+        _fake_wf_fold,
+    )
+
+    result = walk_forward(
+        prices,
+        regimes,
+        config,
+        mode="anchored",
+        per_regime=True,
+    )
+
+    assert result[
+        "n_folds"
+    ] == 3
+
+    assert all(
+        fold[
+            "train_start"
+        ]
+        == pd.Timestamp(
+            "2020-01-01"
+        )
+        for fold
+        in result["folds"]
+    )
+
+    assert all(
+        fold[
+            "train_end"
+        ]
+        < fold[
+            "test_start"
+        ]
+        for fold
+        in result["folds"]
+    )
+
+def test_walk_forward_same_seed_is_reproducible(
+    monkeypatch,
+    config_test,
+):
+    prices = _wf_prices()
+
+    index = next(
+        iter(prices.values())
+    ).index
+
+    regimes = pd.Series(
+        "tendencia",
+        index=index,
+    )
+
+    config = dict(
+        config_test
+    )
+
+    config["blocks"] = {
+        "train": (
+            "2020-01-01",
+            "2020-06-30",
+        ),
+        "validation": (
+            "2020-07-01",
+            "2020-08-31",
+        ),
+        "test": (
+            "2020-09-01",
+            "2020-09-30",
+        ),
+    }
+
+    config[
+        "n_jobs"
+    ] = 1
+
+    monkeypatch.setattr(
+        "src.optimize._run_walk_forward_fold",
+        _fake_wf_fold,
+    )
+
+    first = walk_forward(
+        prices,
+        regimes,
+        config,
+        mode="rolling",
+        per_regime=True,
+    )
+
+    second = walk_forward(
+        prices,
+        regimes,
+        config,
+        mode="rolling",
+        per_regime=True,
+    )
+
+    assert (
+        first[
+            "params_by_fold"
+        ]
+        == second[
+            "params_by_fold"
+        ]
+    )

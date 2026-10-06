@@ -9,6 +9,7 @@ import time
 import numpy as np
 import optuna
 import pandas as pd
+from joblib import Parallel, delayed
 
 from src.backtest import run_backtest
 from src.metrics import compute_metrics
@@ -1412,6 +1413,547 @@ def optimize_regime(
             (start, end),
     }
 
+def _walk_forward_windows(
+    prices: dict,
+    config: dict,
+    mode: str,
+) -> list[dict]:
+    """Construye las ventanas mensuales del walk-forward.
+
+    Rolling conserva únicamente los últimos ``wf_train_months``.
+    Anchored conserva fijo el inicio de Train y expande el final.
+    """
+    if mode not in {
+        "rolling",
+        "anchored",
+    }:
+        raise ValueError(
+            "mode debe ser 'rolling' o 'anchored'."
+        )
+
+    if not prices:
+        raise ValueError(
+            "prices no puede estar vacío."
+        )
+
+    train_months = int(
+        config["wf_train_months"]
+    )
+
+    test_months = int(
+        config["wf_test_months"]
+    )
+
+    step_months = int(
+        config["wf_step_months"]
+    )
+
+    if (
+        train_months <= 0
+        or test_months <= 0
+        or step_months <= 0
+    ):
+        raise ValueError(
+            "Los tamaños del walk-forward "
+            "deben ser positivos."
+        )
+
+    overall_start = pd.Timestamp(
+        config["blocks"]["train"][0]
+    )
+
+    overall_end = pd.Timestamp(
+        config["blocks"]["test"][1]
+    )
+
+    first_ticker = next(
+        iter(prices)
+    )
+
+    dates = prices[
+        first_ticker
+    ].index
+
+    test_start = (
+        overall_start
+        + pd.DateOffset(
+            months=train_months
+        )
+    )
+
+    windows = []
+    fold_number = 0
+
+    while test_start <= overall_end:
+        train_end = (
+            test_start
+            - pd.Timedelta(days=1)
+        )
+
+        if mode == "rolling":
+            train_start = (
+                test_start
+                - pd.DateOffset(
+                    months=train_months
+                )
+            )
+        else:
+            train_start = (
+                overall_start
+            )
+
+        test_end = min(
+            test_start
+            + pd.DateOffset(
+                months=test_months
+            )
+            - pd.Timedelta(days=1),
+            overall_end,
+        )
+
+        train_dates = dates[
+            (dates >= train_start)
+            & (dates <= train_end)
+        ]
+
+        test_dates = dates[
+            (dates >= test_start)
+            & (dates <= test_end)
+        ]
+
+        if (
+            len(train_dates) > 0
+            and len(test_dates) > 0
+        ):
+            windows.append(
+                {
+                    "fold":
+                        fold_number,
+                    "train_start":
+                        train_start,
+                    "train_end":
+                        train_end,
+                    "test_start":
+                        test_start,
+                    "test_end":
+                        test_end,
+                }
+            )
+
+            fold_number += 1
+
+        test_start = (
+            test_start
+            + pd.DateOffset(
+                months=step_months
+            )
+        )
+
+    if not windows:
+        raise ValueError(
+            "No se pudieron construir "
+            "ventanas walk-forward."
+        )
+
+    return windows
+
+def _optimization_summary(
+    result: dict,
+) -> dict:
+    """Resume un resultado de optimize_regime sin guardar el Study completo."""
+    study = result.get(
+        "study"
+    )
+
+    if study is None:
+        n_trials = 0
+        elapsed_seconds = 0.0
+    else:
+        n_trials = len(
+            study.trials
+        )
+
+        elapsed_seconds = float(
+            study.user_attrs.get(
+                "elapsed_seconds",
+                0.0,
+            )
+        )
+
+    return {
+        "regime":
+            result["regime"],
+        "params":
+            result["params"],
+        "feasible":
+            result["feasible"],
+        "fallback_to_single":
+            result[
+                "fallback_to_single"
+            ],
+        "minimum_trades":
+            result[
+                "minimum_trades"
+            ],
+        "n_regime_days":
+            result[
+                "n_regime_days"
+            ],
+        "n_window_days":
+            result[
+                "n_window_days"
+            ],
+        "is_ann_return":
+            result[
+                "is_ann_return"
+            ],
+        "is_calmar":
+            result[
+                "is_calmar"
+            ],
+        "n_trades":
+            result[
+                "n_trades"
+            ],
+        "n_trials":
+            n_trials,
+        "elapsed_seconds":
+            elapsed_seconds,
+    }
+
+def _run_walk_forward_fold(
+    window: dict,
+    prices: dict,
+    regimes: pd.Series,
+    config: dict,
+    per_regime: bool,
+    seed: int,
+) -> dict:
+    """Optimiza Train y evalúa el mes OOS de un fold."""
+    started = time.perf_counter()
+
+    train_start = window[
+        "train_start"
+    ]
+
+    train_end = window[
+        "train_end"
+    ]
+
+    test_start = window[
+        "test_start"
+    ]
+
+    test_end = window[
+        "test_end"
+    ]
+
+    regime_names = list(
+        config[
+            "regime_multiplier"
+        ]
+    )
+
+    single_result = optimize_regime(
+        prices,
+        regimes,
+        regime=None,
+        window=(
+            train_start,
+            train_end,
+        ),
+        config=config,
+        seed=seed,
+    )
+
+    if (
+        not single_result[
+            "feasible"
+        ]
+        or single_result[
+            "params"
+        ] is None
+    ):
+        raise RuntimeError(
+            "No se encontró un theta único "
+            f"factible en el fold {window['fold']}."
+        )
+
+    single_params = dict(
+        single_result[
+            "params"
+        ]
+    )
+
+    optimization = {
+        "single":
+            _optimization_summary(
+                single_result
+            )
+    }
+
+    if per_regime:
+        params_by_regime = {}
+
+        for regime_name in regime_names:
+            regime_result = (
+                optimize_regime(
+                    prices,
+                    regimes,
+                    regime=regime_name,
+                    window=(
+                        train_start,
+                        train_end,
+                    ),
+                    config=config,
+                    seed=seed,
+                )
+            )
+
+            optimization[
+                regime_name
+            ] = (
+                _optimization_summary(
+                    regime_result
+                )
+            )
+
+            if regime_result[
+                "fallback_to_single"
+            ]:
+                params_by_regime[
+                    regime_name
+                ] = dict(
+                    single_params
+                )
+
+            elif regime_result[
+                "feasible"
+            ]:
+                params_by_regime[
+                    regime_name
+                ] = dict(
+                    regime_result[
+                        "params"
+                    ]
+                )
+
+            else:
+                raise RuntimeError(
+                    "No se encontraron parámetros "
+                    "factibles para el régimen "
+                    f"{regime_name!r} en el "
+                    f"fold {window['fold']}."
+                )
+
+    else:
+        params_by_regime = {
+            regime_name:
+                dict(single_params)
+            for regime_name
+            in regime_names
+        }
+
+    train_prices = {
+        ticker: data.loc[
+            :train_end
+        ].copy()
+        for ticker, data
+        in prices.items()
+    }
+
+    first_ticker = next(
+        iter(train_prices)
+    )
+
+    train_index = (
+        train_prices[
+            first_ticker
+        ].index
+    )
+
+    train_dates = train_index[
+        (train_index >= train_start)
+        & (train_index <= train_end)
+    ]
+
+    train_entry_mask = pd.Series(
+        False,
+        index=train_index,
+        dtype=bool,
+    )
+
+    train_entry_mask.loc[
+        train_dates
+    ] = True
+
+    embargo_days = int(
+        config[
+            "embargo_days"
+        ]
+    )
+
+    if embargo_days > 0:
+        train_entry_mask.loc[
+            train_dates[
+                -embargo_days:
+            ]
+        ] = False
+
+    _, is_metrics = (
+        _evaluate_params(
+            params_by_regime,
+            train_prices,
+            regimes,
+            config,
+            entry_mask=
+                train_entry_mask,
+            period=(
+                train_start,
+                train_end,
+            ),
+        )
+    )
+
+    test_prices = {
+        ticker: data.loc[
+            :test_end
+        ].copy()
+        for ticker, data
+        in prices.items()
+    }
+
+    test_index = (
+        test_prices[
+            first_ticker
+        ].index
+    )
+
+    test_dates = test_index[
+        (test_index >= test_start)
+        & (test_index <= test_end)
+    ]
+
+    if len(test_dates) == 0:
+        raise ValueError(
+            "El fold no contiene "
+            "observaciones OOS."
+        )
+
+    test_entry_mask = pd.Series(
+        False,
+        index=test_index,
+        dtype=bool,
+    )
+
+    test_entry_mask.loc[
+        test_dates
+    ] = True
+
+    oos_result, oos_metrics = (
+        _evaluate_params(
+            params_by_regime,
+            test_prices,
+            regimes,
+            config,
+            entry_mask=
+                test_entry_mask,
+            period=(
+                test_start,
+                test_end,
+            ),
+        )
+    )
+
+    oos_equity = (
+        oos_result.equity.loc[
+            test_start:test_end
+        ].copy()
+    )
+
+    if len(
+        oos_result.trades
+    ) == 0:
+        oos_trades = (
+            oos_result.trades.copy()
+        )
+    else:
+        entry_dates = (
+            pd.to_datetime(
+                oos_result.trades[
+                    "entry_date"
+                ]
+            )
+        )
+
+        trade_mask = (
+            (entry_dates >= test_start)
+            & (entry_dates <= test_end)
+        )
+
+        oos_trades = (
+            oos_result.trades.loc[
+                trade_mask
+            ].copy()
+        )
+
+    trade_params = (
+        _trade_params_panel(
+            regimes,
+            params_by_regime,
+            test_index,
+        )
+        .loc[
+            test_start:test_end
+        ]
+        .copy()
+    )
+
+    n_trials_total = sum(
+        item["n_trials"]
+        for item
+        in optimization.values()
+    )
+
+    elapsed_seconds = (
+        time.perf_counter()
+        - started
+    )
+
+    return {
+        "fold":
+            window["fold"],
+        "seed":
+            seed,
+        "train_start":
+            train_start,
+        "train_end":
+            train_end,
+        "test_start":
+            test_start,
+        "test_end":
+            test_end,
+        "params_by_regime":
+            params_by_regime,
+        "optimization":
+            optimization,
+        "is_metrics":
+            is_metrics,
+        "oos_metrics":
+            oos_metrics,
+        "oos_equity":
+            oos_equity,
+        "oos_trades":
+            oos_trades,
+        "trade_params":
+            trade_params,
+        "n_trials_total":
+            n_trials_total,
+        "elapsed_seconds":
+            float(
+                elapsed_seconds
+            ),
+    }
 
 def walk_forward(
     prices: dict,
@@ -1420,9 +1962,210 @@ def walk_forward(
     mode: str = "rolling",
     per_regime: bool = True,
 ) -> dict:
-    """Walk-forward 6m/1m/mensual (SPEC punto 1); `mode` ∈ {"rolling", "anchored"}."""
-    raise NotImplementedError
+    """Ejecuta walk-forward rolling o anchored.
 
+    Cada fold optimiza únicamente con Train y evalúa el mes
+    siguiente fuera de muestra. Las ventanas pueden usar parámetros
+    específicos por régimen o un theta único compartido.
+    """
+    if mode not in {
+        "rolling",
+        "anchored",
+    }:
+        raise ValueError(
+            "mode debe ser 'rolling' o 'anchored'."
+        )
+
+    if not isinstance(
+        per_regime,
+        bool,
+    ):
+        raise TypeError(
+            "per_regime debe ser booleano."
+        )
+
+    windows = (
+        _walk_forward_windows(
+            prices,
+            config,
+            mode,
+        )
+    )
+
+    started = time.perf_counter()
+
+    jobs = [
+        delayed(
+            _run_walk_forward_fold
+        )(
+            window,
+            prices,
+            regimes,
+            config,
+            per_regime,
+            int(
+                config["seed"]
+            )
+            + i,
+        )
+        for i, window
+        in enumerate(windows)
+    ]
+
+    n_jobs = int(
+        config.get(
+            "n_jobs",
+            1,
+        )
+    )
+
+    if n_jobs == 0:
+        raise ValueError(
+            "n_jobs no puede ser cero."
+        )
+
+    folds = Parallel(
+        n_jobs=n_jobs,
+        prefer="threads",
+    )(jobs)
+
+    folds = sorted(
+        folds,
+        key=lambda item:
+            item["fold"],
+    )
+
+    equity_segments = []
+
+    current_equity = float(
+        config[
+            "initial_capital"
+        ]
+    )
+
+    for fold in folds:
+        segment = (
+            fold[
+                "oos_equity"
+            ]
+            .dropna()
+            .astype(float)
+        )
+
+        if segment.empty:
+            continue
+
+        chained = (
+            segment
+            / float(
+                config[
+                    "initial_capital"
+                ]
+            )
+            * current_equity
+        )
+
+        current_equity = float(
+            chained.iloc[-1]
+        )
+
+        equity_segments.append(
+            chained
+        )
+
+    if not equity_segments:
+        raise ValueError(
+            "No se obtuvo equity OOS."
+        )
+
+    oos_equity = pd.concat(
+        equity_segments
+    ).sort_index()
+
+    if not (
+        oos_equity.index.is_unique
+    ):
+        raise ValueError(
+            "Las ventanas OOS se traslapan."
+        )
+
+    trade_param_frames = [
+        fold["trade_params"]
+        for fold in folds
+        if len(
+            fold["trade_params"]
+        ) > 0
+    ]
+
+    if trade_param_frames:
+        trade_params = pd.concat(
+            trade_param_frames
+        ).sort_index()
+    else:
+        trade_params = (
+            pd.DataFrame()
+        )
+
+    trade_frames = [
+        fold["oos_trades"]
+        for fold in folds
+        if len(
+            fold["oos_trades"]
+        ) > 0
+    ]
+
+    if trade_frames:
+        oos_trades = pd.concat(
+            trade_frames,
+            ignore_index=True,
+        )
+    else:
+        oos_trades = (
+            pd.DataFrame()
+        )
+
+    params_by_fold = {
+        fold["fold"]:
+            fold[
+                "params_by_regime"
+            ]
+        for fold in folds
+    }
+
+    elapsed_seconds = (
+        time.perf_counter()
+        - started
+    )
+
+    return {
+        "mode":
+            mode,
+        "per_regime":
+            per_regime,
+        "folds":
+            folds,
+        "params_by_fold":
+            params_by_fold,
+        "trade_params":
+            trade_params,
+        "oos_equity":
+            oos_equity,
+        "oos_trades":
+            oos_trades,
+        "n_folds":
+            len(folds),
+        "n_trials_total":
+            sum(
+                fold[
+                    "n_trials_total"
+                ]
+                for fold in folds
+            ),
+        "elapsed_seconds":
+            float(
+                elapsed_seconds
+            ),
+    }
 
 def wf_efficiency(wf_result: dict) -> float:
     """Desempeño fuera de muestra concatenado / promedio del desempeño dentro de muestra."""
