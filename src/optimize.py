@@ -9,6 +9,11 @@ import numpy as np
 import optuna
 import pandas as pd
 
+from src.backtest import run_backtest
+from src.metrics import compute_metrics
+from src.portfolio import sleeve_weights
+from src.signals import generate_signals
+
 _PARAMETER_KINDS = {
     "sma_fast": "int",
     "sma_slow": "int",
@@ -20,6 +25,111 @@ _PARAMETER_KINDS = {
     "max_holding": "int",
     "risk_per_trade": "float",
 }
+
+_TRADE_PARAM_KEYS = (
+    "k_stop",
+    "reward_ratio",
+    "max_holding",
+    "risk_per_trade",
+)
+
+def _trade_params_panel(
+    regimes: pd.Series,
+    params_by_regime: dict,
+    index: pd.Index,
+) -> pd.DataFrame:
+    """Construye el panel fecha × parámetros que recibe run_backtest.
+
+    Cada fecha usa los parámetros correspondientes al régimen vigente.
+    Las fechas sin régimen permanecen como NaN y no habilitan entradas.
+    """
+    labels = regimes.reindex(index)
+
+    panel = pd.DataFrame(
+        np.nan,
+        index=index,
+        columns=_TRADE_PARAM_KEYS,
+        dtype=float,
+    )
+
+    for regime_name, params in params_by_regime.items():
+        mask = labels == regime_name
+
+        for key in _TRADE_PARAM_KEYS:
+            panel.loc[
+                mask,
+                key,
+            ] = params[key]
+
+    panel["regime"] = labels
+
+    return panel
+
+def _evaluate_params(
+    params_by_regime: dict,
+    prices: dict,
+    regimes: pd.Series,
+    config: dict,
+    entry_mask: pd.Series | None = None,
+) -> tuple:
+    """Ejecuta señales, portafolio, backtest y métricas para un candidato.
+
+    Sigue el flujo definido en P2:
+    generate_signals -> sleeve_weights -> run_backtest -> métricas.
+    """
+    tickers = list(prices)
+
+    if not tickers:
+        raise ValueError(
+            "prices no puede estar vacío."
+        )
+
+    index = prices[
+        tickers[0]
+    ].index
+
+    labels = regimes.reindex(index)
+
+    signals = generate_signals(
+        prices,
+        params_by_regime,
+        labels,
+        config,
+    )
+
+    sleeve = sleeve_weights(
+        prices,
+        signals,
+        labels,
+        config,
+        method="risk_parity",
+    )
+
+    trade_params = _trade_params_panel(
+        labels,
+        params_by_regime,
+        index,
+    )
+
+    result = run_backtest(
+        prices,
+        signals,
+        sleeve,
+        trade_params,
+        config,
+        entry_mask=entry_mask,
+    )
+
+    metrics = compute_metrics(
+        result.equity,
+        result.trades,
+        rf=0.0,
+        periods_per_year=config[
+            "periods_per_year"
+        ],
+    )
+
+    return result, metrics
 
 def search_space() -> dict:
     """Describe las nueve dimensiones del espacio de búsqueda de P2.
@@ -255,9 +365,135 @@ def sensitivity(
     config: dict,
     pct: float = 0.20,
 ) -> pd.DataFrame:
-    """Varía cada parámetro a ×(1 − pct) y ×(1 + pct) y reporta el cambio en Calmar."""
-    raise NotImplementedError
+    """Sensibilidad de cada parámetro óptimo a ±pct.
 
+    Cada parámetro se modifica individualmente manteniendo los demás
+    constantes. Los parámetros enteros se redondean al entero más
+    cercano, como exige P2.
+
+    Returns
+    -------
+    pd.DataFrame
+        Régimen, parámetro, factor, valor base, valor probado,
+        Calmar base, Calmar probado y delta de Calmar.
+    """
+    if not 0 < pct < 1:
+        raise ValueError(
+            "pct debe estar en el intervalo (0, 1)."
+        )
+
+    _, baseline_metrics = _evaluate_params(
+        params_by_regime,
+        prices,
+        regimes,
+        config,
+    )
+
+    baseline_calmar = baseline_metrics[
+        "calmar"
+    ]
+
+    rows = []
+
+    for regime_name in sorted(
+        params_by_regime
+    ):
+        base_params = params_by_regime[
+            regime_name
+        ]
+
+        for parameter in search_space():
+            base_value = base_params[
+                parameter
+            ]
+
+            for factor in (
+                1.0 - pct,
+                1.0 + pct,
+            ):
+                candidate = {
+                    name: dict(values)
+                    for name, values
+                    in params_by_regime.items()
+                }
+
+                varied_value = (
+                    base_value
+                    * factor
+                )
+
+                if (
+                    _PARAMETER_KINDS[
+                        parameter
+                    ]
+                    == "int"
+                ):
+                    varied_value = int(
+                        round(varied_value)
+                    )
+                else:
+                    varied_value = float(
+                        varied_value
+                    )
+
+                candidate[
+                    regime_name
+                ][
+                    parameter
+                ] = varied_value
+
+                _, candidate_metrics = (
+                    _evaluate_params(
+                        candidate,
+                        prices,
+                        regimes,
+                        config,
+                    )
+                )
+
+                candidate_calmar = (
+                    candidate_metrics[
+                        "calmar"
+                    ]
+                )
+
+                if (
+                    np.isfinite(
+                        baseline_calmar
+                    )
+                    and np.isfinite(
+                        candidate_calmar
+                    )
+                ):
+                    delta_calmar = (
+                        candidate_calmar
+                        - baseline_calmar
+                    )
+                else:
+                    delta_calmar = np.nan
+
+                rows.append(
+                    {
+                        "regime":
+                            regime_name,
+                        "parameter":
+                            parameter,
+                        "factor":
+                            factor,
+                        "base_value":
+                            base_value,
+                        "tested_value":
+                            varied_value,
+                        "baseline_calmar":
+                            baseline_calmar,
+                        "calmar":
+                            candidate_calmar,
+                        "delta_calmar":
+                            delta_calmar,
+                    }
+                )
+
+    return pd.DataFrame(rows)
 
 def cost_sweep(
     params_by_regime: dict,
