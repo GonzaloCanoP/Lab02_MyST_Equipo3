@@ -203,15 +203,222 @@ def drawdown_series(
 def returns_table(
     equity: pd.Series,
 ) -> dict[str, pd.DataFrame]:
-    """Tablas de retornos con llaves mensual, trimestral y anual."""
-    raise NotImplementedError
+    """Construye tablas de retornos mensuales, trimestrales y anuales.
+
+    Los retornos de cada periodo se calculan componiendo los retornos
+    diarios de la curva de equity.
+
+    Parameters
+    ----------
+    equity : pd.Series
+        Curva de equity con DatetimeIndex.
+
+    Returns
+    -------
+    dict[str, pd.DataFrame]
+        Tablas con llaves ``mensual``, ``trimestral`` y ``anual``.
+    """
+    if not isinstance(equity.index, pd.DatetimeIndex):
+        raise TypeError(
+            "equity debe tener un DatetimeIndex."
+        )
+
+    returns = equity.pct_change(
+        fill_method=None
+    ).dropna()
+
+    monthly = (
+        (1.0 + returns)
+        .groupby(
+            returns.index.to_period("M")
+        )
+        .prod()
+        - 1.0
+    )
+
+    monthly_data = pd.DataFrame(
+        {
+            "year": monthly.index.year,
+            "month": monthly.index.month,
+            "return": monthly.to_numpy(),
+        }
+    )
+
+    monthly_table = (
+        monthly_data
+        .pivot(
+            index="year",
+            columns="month",
+            values="return",
+        )
+        .reindex(
+            columns=range(1, 13)
+        )
+        .sort_index()
+    )
+
+    monthly_table.index.name = "Año"
+    monthly_table.columns.name = "Mes"
+
+    quarterly = (
+        (1.0 + returns)
+        .groupby(
+            returns.index.to_period("Q")
+        )
+        .prod()
+        - 1.0
+    )
+
+    quarterly_data = pd.DataFrame(
+        {
+            "year": quarterly.index.year,
+            "quarter": quarterly.index.quarter,
+            "return": quarterly.to_numpy(),
+        }
+    )
+
+    quarterly_table = (
+        quarterly_data
+        .pivot(
+            index="year",
+            columns="quarter",
+            values="return",
+        )
+        .reindex(
+            columns=range(1, 5)
+        )
+        .sort_index()
+    )
+
+    quarterly_table.index.name = "Año"
+    quarterly_table.columns.name = "Trimestre"
+
+    annual = (
+        (1.0 + returns)
+        .groupby(
+            returns.index.to_period("Y")
+        )
+        .prod()
+        - 1.0
+    )
+
+    annual_table = pd.DataFrame(
+        {
+            "Retorno": annual.to_numpy()
+        },
+        index=annual.index.year,
+    )
+
+    annual_table.index.name = "Año"
+    annual_table.columns.name = "Periodo"
+
+    return {
+        "mensual": monthly_table,
+        "trimestral": quarterly_table,
+        "anual": annual_table,
+    }
 
 
 def exposure_metrics(
     result: BacktestResult,
 ) -> dict:
-    """Tiempo en mercado, operaciones por mes y salidas por motivo."""
-    raise NotImplementedError
+    """Calcula métricas de exposición de la estrategia.
+
+    Reporta porcentaje de días con posición por activo y para
+    el portafolio, operaciones cerradas por mes y motivos de salida.
+
+    Parameters
+    ----------
+    result : BacktestResult
+        Resultado producido por ``run_backtest``.
+
+    Returns
+    -------
+    dict
+        Métricas de exposición y actividad.
+    """
+    positions = result.positions
+
+    if len(positions) == 0:
+        return {
+            "time_in_market_by_asset": pd.Series(
+                dtype=float
+            ),
+            "time_in_market_portfolio": np.nan,
+            "trades_per_month": np.nan,
+            "exit_reasons": pd.Series(
+                dtype=int,
+                name="count",
+            ),
+        }
+
+    in_market = (
+        positions.abs() > 0
+    )
+
+    time_by_asset = (
+        in_market.mean()
+        .rename("time_in_market")
+    )
+
+    time_portfolio = float(
+        in_market.any(axis=1).mean()
+    )
+
+    n_months = (
+        result.equity.index
+        .to_period("M")
+        .nunique()
+    )
+
+    trades_per_month = (
+        len(result.trades) / n_months
+        if n_months > 0
+        else np.nan
+    )
+
+    reasons = [
+        "signal",
+        "stop",
+        "target",
+        "max_holding",
+    ]
+
+    if (
+        len(result.trades) > 0
+        and "exit_reason"
+        in result.trades.columns
+    ):
+        exit_reasons = (
+            result.trades[
+                "exit_reason"
+            ]
+            .value_counts()
+            .reindex(
+                reasons,
+                fill_value=0,
+            )
+            .astype(int)
+        )
+    else:
+        exit_reasons = pd.Series(
+            0,
+            index=reasons,
+            dtype=int,
+        )
+
+    exit_reasons.name = "count"
+
+    return {
+        "time_in_market_by_asset":
+            time_by_asset,
+        "time_in_market_portfolio":
+            time_portfolio,
+        "trades_per_month":
+            float(trades_per_month),
+        "exit_reasons":
+            exit_reasons,
+    }
 
 
 def breakeven_winrate(
@@ -221,5 +428,122 @@ def breakeven_winrate(
     atr_over_price: float,
     config: dict,
 ) -> dict:
-    """Win rate de equilibrio teórico contra el empírico."""
-    raise NotImplementedError
+    """Compara el win rate de equilibrio teórico y empírico.
+
+    El teórico sigue SPEC punto 8:
+
+        p* = (1 + c) / (1 + r)
+
+        c = 2 * (commission + slippage)
+            / (k_stop * ATR/P)
+
+    El empírico usa:
+
+        p* = 1 / (1 + payoff)
+
+    Parameters
+    ----------
+    trades : pd.DataFrame
+        Operaciones cerradas con columna ``pnl_net``.
+    k_stop : float
+        Multiplicador del stop.
+    reward_ratio : float
+        Relación recompensa/riesgo.
+    atr_over_price : float
+        ATR dividido entre precio.
+    config : dict
+        Configuración del proyecto.
+
+    Returns
+    -------
+    dict
+        Break-even teórico, empírico y win rate observado.
+    """
+    if k_stop <= 0:
+        raise ValueError(
+            "k_stop debe ser positivo."
+        )
+
+    if reward_ratio <= 0:
+        raise ValueError(
+            "reward_ratio debe ser positivo."
+        )
+
+    if atr_over_price <= 0:
+        raise ValueError(
+            "atr_over_price debe ser positivo."
+        )
+
+    cost_in_r = (
+        2.0
+        * (
+            config["commission"]
+            + config["slippage"]
+        )
+        / (
+            k_stop
+            * atr_over_price
+        )
+    )
+
+    theoretical = (
+        1.0 + cost_in_r
+    ) / (
+        1.0 + reward_ratio
+    )
+
+    if (
+        len(trades) > 0
+        and "pnl_net" in trades.columns
+    ):
+        pnl = pd.to_numeric(
+            trades["pnl_net"],
+            errors="coerce",
+        ).dropna()
+
+        observed = (
+            float((pnl > 0).mean())
+            if len(pnl) > 0
+            else np.nan
+        )
+
+        wins = pnl[pnl > 0]
+        losses = pnl[pnl < 0]
+
+        if (
+            not wins.empty
+            and not losses.empty
+        ):
+            payoff_ratio = float(
+                wins.mean()
+                / abs(losses.mean())
+            )
+
+            empirical = (
+                1.0
+                / (
+                    1.0
+                    + payoff_ratio
+                )
+            )
+        else:
+            payoff_ratio = np.nan
+            empirical = np.nan
+
+    else:
+        observed = np.nan
+        payoff_ratio = np.nan
+        empirical = np.nan
+
+    return {
+        "theoretical_win_rate":
+            float(theoretical),
+        "empirical_breakeven_win_rate":
+            float(empirical),
+        "observed_win_rate":
+            float(observed),
+        "payoff_ratio":
+            float(payoff_ratio),
+        "cost_in_r":
+            float(cost_in_r),
+    }
