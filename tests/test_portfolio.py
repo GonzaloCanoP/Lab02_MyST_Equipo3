@@ -20,6 +20,7 @@ from src.portfolio import (
     risk_parity_weights,
     sleeve_weights,
     turnover,
+    weight_stability,
 )
 
 SEED = 42
@@ -522,4 +523,40 @@ def test_rebalance_sweep_rejects_invalid_inputs_and_keeps_config(synthetic_price
     with pytest.raises(ValueError):
         rebalance_sweep(synthetic_prices, params, regimes, config_test, [-0.1], ["M"])
     rebalance_sweep(synthetic_prices, params, regimes, config_test, [0.05], ["M"])
+    assert config_test == before
+
+
+# ---------------------------------------------------------------------------------------------
+# weight_stability
+# ---------------------------------------------------------------------------------------------
+
+
+def test_weight_stability_shape_and_manual_check(synthetic_prices, config_test):
+    out = weight_stability(synthetic_prices, config_test)
+    assert list(out.index) == ["sample", "ewma", "ledoit_wolf"]
+    assert list(out.columns) == [*synthetic_prices, "mean_std", "n_reviews"]
+    assert (out[list(synthetic_prices)] >= 0).all().all()
+    np.testing.assert_allclose(out["mean_std"], out[list(synthetic_prices)].mean(axis=1))
+    # comprobación manual con Ledoit-Wolf: pesos en cada primer día hábil del mes, sin banda
+    returns = np.log(pd.DataFrame({t: o["close"] for t, o in synthetic_prices.items()})).diff()
+    window = config_test["cov_window"]
+    reviews = ~returns.index.to_period("M").duplicated()
+    rows = [
+        risk_parity_weights(estimate_cov(returns.iloc[p - window + 1 : p + 1], "ledoit_wolf"))
+        for p in range(window, len(returns))
+        if reviews[p]
+    ]
+    expected = pd.DataFrame(rows).std(ddof=1)
+    np.testing.assert_allclose(out.loc["ledoit_wolf", list(synthetic_prices)], expected, rtol=1e-6)
+    assert out.loc["ledoit_wolf", "n_reviews"] == len(rows)
+
+
+def test_weight_stability_period_restricts_reviews_and_does_not_modify_config(
+    synthetic_prices, config_test
+):
+    index = synthetic_prices["A0"].index
+    before = dict(config_test)
+    full = weight_stability(synthetic_prices, config_test)
+    part = weight_stability(synthetic_prices, config_test, period=(index[300], index[-1]))
+    assert (part["n_reviews"] < full["n_reviews"]).all()
     assert config_test == before

@@ -15,6 +15,7 @@ from src.signals import generate_signals
 # T_eff = 1 / (1 − λ) = 100 días, comparable a la ventana de 126 días).
 _TRADE_PARAM_KEYS = ["k_stop", "reward_ratio", "max_holding", "risk_per_trade"]
 EWMA_LAMBDA = 0.99
+ESTIMATORS = ("sample", "ewma", "ledoit_wolf")
 
 
 def _validate_cov(cov: pd.DataFrame) -> None:
@@ -414,3 +415,36 @@ def rebalance_sweep(
                 }
             )
     return pd.DataFrame(rows)
+
+
+def weight_stability(prices: dict, config: dict, period: tuple | None = None) -> pd.DataFrame:
+    """Estabilidad de w^RP por estimador: desviación estándar del peso de cada activo entre revisiones.
+
+    Para cada estimador de `ESTIMATORS` calcula los pesos Risk Parity en cada fecha de revisión
+    (primer día hábil de cada periodo de `rebalance_frequency`) sin banda de aceptación, para ver
+    todo el movimiento que produce el estimador. Menor desviación = pesos más estables
+    (SPEC_portafolio, Estimador de covarianza).
+
+    Parameters
+    ----------
+    period : (inicio, fin), optional
+        Recorta las revisiones a un bloque (p. ej. train).
+
+    Returns
+    -------
+    pd.DataFrame
+        Una fila por estimador; columnas: una por activo (desviación estándar de su peso),
+        `mean_std` (promedio entre activos) y `n_reviews` (revisiones usadas).
+    """
+    returns = _log_returns(prices)
+    is_review = ~returns.index.to_period(config["rebalance_frequency"]).duplicated()
+    rows = {}
+    for method in ESTIMATORS:
+        cfg = {**config, "cov_method": method, "rebalance_band": 0.0}
+        panel = _base_weights(returns, cfg, "risk_parity")
+        reviewed = panel[is_review].dropna()
+        if period is not None:
+            reviewed = reviewed.loc[pd.Timestamp(period[0]) : pd.Timestamp(period[1])]
+        std = reviewed.std(ddof=1)
+        rows[method] = {**std.to_dict(), "mean_std": float(std.mean()), "n_reviews": len(reviewed)}
+    return pd.DataFrame.from_dict(rows, orient="index")
