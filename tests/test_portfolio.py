@@ -519,9 +519,24 @@ def test_rebalance_sweep_matches_manual_run_and_restricts_to_period(synthetic_pr
     part = rebalance_sweep(
         synthetic_prices, params, regimes, config_test, [0.05], ["M"], period=(index[300], index[-1])
     )
-    eq = manual.equity.loc[index[300]:]
+    eq = manual.equity.loc[index[299]:]  # el bloque arranca en el cierre anterior (block_equity)
     assert part["net_return"].iloc[0] == pytest.approx(eq.iloc[-1] / eq.iloc[0] - 1)
     assert part["n_trades"].iloc[0] <= full["n_trades"].iloc[0]
+
+
+def test_period_results_do_not_depend_on_data_after_the_period(synthetic_prices, config_test):
+    """Con `period`, agregar datos posteriores a su fin no cambia el barrido ni el desempeño."""
+    params, regimes = _sweep_inputs(synthetic_prices, config_test)
+    index = synthetic_prices["A0"].index
+    period = (index[200], index[400])
+    shorter = {t: ohlcv.iloc[:450] for t, ohlcv in synthetic_prices.items()}
+    for function, kwargs in (
+        (rebalance_sweep, {"bands": [0.05], "frequencies": ["M"]}),
+        (performance_comparison, {"include_assets": False}),
+    ):
+        full = function(synthetic_prices, params, regimes, config_test, period=period, **kwargs)
+        cut = function(shorter, params, regimes, config_test, period=period, **kwargs)
+        pd.testing.assert_frame_equal(full, cut)
 
 
 def test_rebalance_sweep_rejects_invalid_inputs_and_keeps_config(synthetic_prices, config_test):

@@ -11,7 +11,7 @@ from scipy.optimize import minimize
 from sklearn.covariance import LedoitWolf
 
 from src.backtest import run_backtest
-from src.metrics import compute_metrics
+from src.metrics import block_equity, compute_metrics
 from src.signals import generate_signals
 
 _TRADE_PARAM_KEYS = ["k_stop", "reward_ratio", "max_holding", "risk_per_trade"]
@@ -382,6 +382,20 @@ def turnover(weights_drift: pd.DataFrame, weights_target: pd.DataFrame) -> pd.Se
     return 0.5 * (weights_target - weights_drift).abs().sum(axis=1).rename("turnover")
 
 
+def _truncate(prices: dict, period: tuple | None) -> dict:
+    """Precios hasta el fin de `period` (todos sin periodo): nada posterior entra al cálculo."""
+    if period is None:
+        return prices
+    return {ticker: ohlcv.loc[: pd.Timestamp(period[1])] for ticker, ohlcv in prices.items()}
+
+
+def _period_bounds(dates: pd.DatetimeIndex, period: tuple | None) -> tuple:
+    """(inicio, fin) de `period` como Timestamp, o la muestra completa sin periodo."""
+    if period is None:
+        return dates[0], dates[-1]
+    return pd.Timestamp(period[0]), pd.Timestamp(period[1])
+
+
 def rebalance_sweep(
     prices: dict,
     params_by_regime: dict,
@@ -403,7 +417,8 @@ def rebalance_sweep(
         Parámetros de operación por fecha para `run_backtest`. Si falta, se usa
         `config["base_params"]` constante, como la corrida base.
     period : (inicio, fin), optional
-        Recorta las métricas a un bloque (p. ej. train o validation); el backtest corre completo.
+        Bloque medido (p. ej. train o validation). Los precios se recortan a su fin, así que nada
+        posterior entra al cálculo; la historia previa calienta indicadores y Σ.
 
     Returns
     -------
@@ -418,6 +433,7 @@ def rebalance_sweep(
     if any(b < 0 for b in bands):
         raise ValueError("las bandas deben ser no negativas")
 
+    prices = _truncate(prices, period)
     signals = generate_signals(prices, params_by_regime, regimes, config)
     dates = next(iter(prices.values())).index
     if trade_params is None:
@@ -425,7 +441,7 @@ def rebalance_sweep(
             {k: config["base_params"][k] for k in _TRADE_PARAM_KEYS}, index=dates
         )
     returns = _simple_returns(prices)
-    start, end = (dates[0], dates[-1]) if period is None else (pd.Timestamp(period[0]), pd.Timestamp(period[1]))
+    start, end = _period_bounds(dates, period)
 
     rows = []
     for frequency in frequencies:
@@ -442,7 +458,7 @@ def rebalance_sweep(
                 change.loc[first] = 0.0  # la primera adopción parte de cero: no es rotación
             years = max((end - start).days / 365.25, 1e-9)
 
-            equity = result.equity.loc[start:end]
+            equity = block_equity(result.equity, start, end)
             total_cost = float(result.costs.loc[start:end].to_numpy().sum())
             net = equity.iloc[-1] / equity.iloc[0] - 1
             gross = (equity.iloc[-1] + total_cost) / equity.iloc[0] - 1
@@ -568,7 +584,8 @@ def performance_comparison(
     trade_params : pd.DataFrame, optional
         Si falta, se usa `config["base_params"]` constante.
     period : (inicio, fin), optional
-        Bloque sobre el que se miden las métricas; el backtest corre completo.
+        Bloque medido. Los precios se recortan a su fin y el equity arranca en el cierre anterior
+        al bloque (`block_equity`).
 
     Returns
     -------
@@ -576,13 +593,14 @@ def performance_comparison(
         Una fila por estrategia ("risk_parity", "equal" y los tickers) con las columnas de
         `compute_metrics`.
     """
+    prices = _truncate(prices, period)
     signals = generate_signals(prices, params_by_regime, regimes, config)
     dates = next(iter(prices.values())).index
     if trade_params is None:
         trade_params = pd.DataFrame(
             {k: config["base_params"][k] for k in _TRADE_PARAM_KEYS}, index=dates
         )
-    start, end = (dates[0], dates[-1]) if period is None else (pd.Timestamp(period[0]), pd.Timestamp(period[1]))
+    start, end = _period_bounds(dates, period)
 
     results = {
         method: run_backtest(
@@ -605,7 +623,7 @@ def performance_comparison(
     for name, result in results.items():
         trades = result.trades[result.trades["entry_date"].between(start, end)]
         rows[name] = compute_metrics(
-            result.equity.loc[start:end], trades, rf, config["periods_per_year"]
+            block_equity(result.equity, start, end), trades, rf, config["periods_per_year"]
         )
     return pd.DataFrame.from_dict(rows, orient="index")
 
