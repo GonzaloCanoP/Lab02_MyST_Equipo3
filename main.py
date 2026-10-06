@@ -14,7 +14,7 @@ from src.backtest import market_impact, run_backtest
 from src.data import audit_prices, block_dates, download_prices, load_prices, load_risk_free
 from src.metrics import compute_metrics, drawdown_series
 from src.optimize import diagnostic_study, select_plateau, walk_forward, wf_efficiency
-from src.portfolio import sleeve_weights
+from src.portfolio import portfolio_results, sleeve_weights
 from src.plots import plot_drawdown, plot_equity
 from src.regimes import REGIME_NAMES, label_regimes
 from src.signals import generate_signals
@@ -260,6 +260,14 @@ def stage_save_base_run(base_run: dict, config: dict) -> None:
             config,
         )
 
+def stage_portfolio(prices: dict, rf, regimes, config: dict) -> dict:
+       """Resultados de P4 con θ base, solo en train. Validation se mide una vez con los θ finales."""
+       blocks = block_dates(config)
+       params = dict.fromkeys(REGIME_NAMES, config["base_params"])
+       results = portfolio_results(prices, params, regimes, config, 0.0, {"train": blocks["train"]})
+       save_results(results, "portafolio", config)
+       return results
+
 
 def stage_report(backtests: dict, rf, config: dict) -> None:
     """Calcula métricas y guarda resultados en `results/`; las figuras van a `docs/figuras/`."""
@@ -380,6 +388,7 @@ def main() -> None:
     prices, rf, audit = stage_load(CONFIG)
     regimes = stage_regimes(prices, CONFIG)
     save_results({"audit": audit, "regimes": regimes}, "datos_regimen", CONFIG)
+    stage_portfolio(prices, rf, regimes, CONFIG)
     stage_save_base_run(stage_base_run(prices, CONFIG), CONFIG)
     stage_diagnostics(prices, CONFIG)
     wf = stage_walk_forward(prices, regimes, CONFIG)
