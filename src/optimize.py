@@ -16,6 +16,10 @@ from src.metrics import compute_metrics
 from src.portfolio import sleeve_weights
 from src.signals import compute_indicators, generate_signals, indicator_votes
 
+# Un estudio del walk-forward corre 150 pruebas y hay cientos de estudios: el log INFO de Optuna
+# (un renglón por prueba) taparía cualquier mensaje útil. Se conservan advertencias y errores.
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+
 _PARAMETER_KINDS = {
     "sma_fast": "int",
     "sma_slow": "int",
@@ -37,18 +41,45 @@ def _trade_params_panel(
     """Construye el panel fecha × parámetros que recibe run_backtest.
 
     Cada fecha usa los parámetros correspondientes al régimen vigente.
-    Las fechas sin régimen permanecen como NaN y no habilitan entradas.
+    Las fechas sin régimen, o de un régimen en efectivo (parámetros None, SPEC punto 7),
+    permanecen como NaN y no habilitan entradas.
     """
     labels = regimes.reindex(index)
     panel = pd.DataFrame(np.nan, index=index, columns=_TRADE_PARAM_KEYS, dtype=float)
 
     for regime_name, params in params_by_regime.items():
+        if params is None:
+            continue
         mask = labels == regime_name
         for key in _TRADE_PARAM_KEYS:
             panel.loc[mask, key] = params[key]
     panel["regime"] = labels
 
     return panel
+
+
+def _signal_params(params_by_regime: dict, config: dict) -> dict:
+    """θ para `generate_signals`: un régimen en efectivo (None) usa los valores base.
+
+    Su señal no se opera, porque `_trade_params_panel` deja NaN en esas fechas y `run_backtest`
+    no abre sin parámetros; solo hace falta para que `generate_signals` cubra todos los regímenes.
+    """
+    return {
+        name: dict(config["base_params"]) if params is None else params
+        for name, params in params_by_regime.items()
+    }
+
+
+def _minimum_trades(train_dates: pd.DatetimeIndex, n_regime_days: int, config: dict) -> int:
+    """Actividad mínima de una ventana (SPEC punto 7).
+
+    24 operaciones cerradas por cada `wf_train_months` meses de ventana (una por activo cada dos
+    meses), escaladas al largo real de la ventana (diagnóstico sobre todo train y anchored) y
+    prorrateadas por los días del régimen: N_min,g = ceil(N · D_g / D).
+    """
+    n_months = train_dates.to_period("M").nunique()
+    per_window = config["min_trades_per_window"] * n_months / config["wf_train_months"]
+    return int(math.ceil(per_window * n_regime_days / len(train_dates)))
 
 
 def _evaluate_params(
@@ -70,7 +101,7 @@ def _evaluate_params(
         raise ValueError("prices no puede estar vacío.")
     index = prices[tickers[0]].index
     labels = regimes.reindex(index)
-    signals = generate_signals(prices, params_by_regime, labels, config)
+    signals = generate_signals(prices, _signal_params(params_by_regime, config), labels, config)
     sleeve = sleeve_weights(prices, signals, labels, config, method="risk_parity")
     trade_params = _trade_params_panel(labels, params_by_regime, index)
     result = run_backtest(prices, signals, sleeve, trade_params, config, entry_mask=entry_mask)
@@ -247,7 +278,7 @@ def diagnostic_study(
     # caso neutral de la corrida base.
     single_regime = max(config["regime_multiplier"], key=config["regime_multiplier"].get)
     regime_labels = pd.Series(single_regime, index=index, name="regime")
-    minimum_trades = int(config["min_trades_per_window"])
+    minimum_trades = _minimum_trades(train_dates, len(train_dates), config)
 
     def objective(trial: optuna.Trial) -> float:
         params = _suggest_params(trial, config)
@@ -428,12 +459,10 @@ def optimize_regime(
 
     if regime is None:
         n_regime_days = n_window_days
-        minimum_trades = int(config["min_trades_per_window"])
     else:
         n_regime_days = int((labels.loc[train_dates] == regime).sum())
-        minimum_trades = int(
-            math.ceil(config["min_trades_per_window"] * n_regime_days / n_window_days)
-        )
+    minimum_trades = _minimum_trades(train_dates, n_regime_days, config)
+    if regime is not None:
         if n_regime_days < config["min_regime_days"]:
             return {
                 "regime": regime,
@@ -636,7 +665,12 @@ def _optimization_summary(result: dict) -> dict:
 def _run_walk_forward_fold(
     window: dict, prices: dict, regimes: pd.Series, config: dict, per_regime: bool, seed: int
 ) -> dict:
-    """Optimiza Train y evalúa el mes OOS de un fold."""
+    """Optimiza Train y evalúa el mes OOS de un fold.
+
+    Sin configuraciones factibles no se detiene el walk-forward (SPEC punto 7): un régimen sin θ
+    factible usa el θ único de la ventana, y si tampoco hay θ único factible queda en efectivo
+    (parámetros None) durante el mes de prueba. Esos regímenes se listan en `cash_regimes`.
+    """
     started = time.perf_counter()
     train_start = window["train_start"]
     train_end = window["train_end"]
@@ -647,9 +681,7 @@ def _run_walk_forward_fold(
         prices, regimes, regime=None, window=(train_start, train_end), config=config, seed=seed
     )
 
-    if not single_result["feasible"] or single_result["params"] is None:
-        raise RuntimeError(f"No se encontró un theta único factible en el fold {window['fold']}.")
-    single_params = dict(single_result["params"])
+    single_params = single_result["params"]
     optimization = {"single": _optimization_summary(single_result)}
 
     if per_regime:
@@ -664,19 +696,18 @@ def _run_walk_forward_fold(
                 seed=seed,
             )
             optimization[regime_name] = _optimization_summary(regime_result)
-            if regime_result["fallback_to_single"]:
-                params_by_regime[regime_name] = dict(single_params)
-            elif regime_result["feasible"]:
+            if regime_result["feasible"]:
                 params_by_regime[regime_name] = dict(regime_result["params"])
-            else:
-                raise RuntimeError(
-                    "No se encontraron parámetros "
-                    "factibles para el régimen "
-                    f"{regime_name!r} en el "
-                    f"fold {window['fold']}."
+            else:  # menos de min_regime_days o sin pruebas factibles: θ único (o efectivo)
+                params_by_regime[regime_name] = (
+                    None if single_params is None else dict(single_params)
                 )
     else:
-        params_by_regime = {regime_name: dict(single_params) for regime_name in regime_names}
+        params_by_regime = {
+            regime_name: None if single_params is None else dict(single_params)
+            for regime_name in regime_names
+        }
+    cash_regimes = [name for name, params in params_by_regime.items() if params is None]
     train_prices = {ticker: data.loc[:train_end].copy() for ticker, data in prices.items()}
     first_ticker = next(iter(train_prices))
     train_index = train_prices[first_ticker].index
@@ -733,6 +764,7 @@ def _run_walk_forward_fold(
         "test_start": test_start,
         "test_end": test_end,
         "params_by_regime": params_by_regime,
+        "cash_regimes": cash_regimes,
         "optimization": optimization,
         "is_metrics": is_metrics,
         "oos_metrics": oos_metrics,
@@ -770,7 +802,8 @@ def walk_forward(
 
     if n_jobs == 0:
         raise ValueError("n_jobs no puede ser cero.")
-    folds = Parallel(n_jobs=n_jobs, prefer="threads")(jobs)
+    # Procesos y no threads: el loop del motor es Python puro y con threads el GIL lo serializa.
+    folds = Parallel(n_jobs=n_jobs)(jobs)
     folds = sorted(folds, key=lambda item: item["fold"])
     equity_segments = []
     current_equity = float(config["initial_capital"])
@@ -875,9 +908,9 @@ def wf_efficiency(wf_result: dict, metric: str = "ann_return") -> float:
         if metric not in is_metrics:
             return np.nan
         value = float(is_metrics[metric])
-        if not np.isfinite(value):
-            return np.nan
-        is_values.append(value)
+        # Una ventana completa en efectivo no tiene Calmar (MDD = 0); no aporta al promedio IS.
+        if np.isfinite(value):
+            is_values.append(value)
 
     if not is_values:
         return np.nan

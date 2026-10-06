@@ -412,3 +412,83 @@ def test_wf_efficiency_rejects_unknown_metric():
             },
             metric="sharpe",
         )
+
+
+def test_minimum_trades_scales_with_window_length_and_regime(config_test):
+    """24 por cada 6 meses de ventana (SPEC punto 7), escalado al largo real y prorrateado."""
+    from src.optimize import _minimum_trades
+
+    six_months = pd.bdate_range("2020-01-01", "2020-06-30")
+    train = pd.bdate_range("2018-01-01", "2021-12-31")
+    assert _minimum_trades(six_months, len(six_months), config_test) == 24
+    assert _minimum_trades(train, len(train), config_test) == 192
+    assert _minimum_trades(six_months, len(six_months) // 2, config_test) == math.ceil(
+        24 * (len(six_months) // 2) / len(six_months)
+    )
+
+
+def _fold_inputs(config_test):
+    from tests.conftest import make_synthetic_prices
+
+    prices = make_synthetic_prices(n_assets=3, n_days=400, seed=7)
+    index = next(iter(prices.values())).index
+    names = ["tendencia", "reversion", "crisis"]
+    regimes = pd.Series([names[i % 3] for i in range(len(index))], index=index)
+    window = {
+        "fold": 0,
+        "train_start": pd.Timestamp("2018-08-01"),
+        "train_end": pd.Timestamp("2019-01-31"),
+        "test_start": pd.Timestamp("2019-02-01"),
+        "test_end": pd.Timestamp("2019-02-28"),
+    }
+    return prices, regimes, window
+
+
+def _fake_optimize(feasible_single: bool, base_params: dict):
+    def fake(prices, regimes, regime, window, config, seed):
+        feasible = regime is None and feasible_single
+        return {
+            "regime": regime,
+            "params": dict(base_params) if feasible else None,
+            "study": None,
+            "feasible": feasible,
+            "fallback_to_single": False,
+            "n_window_days": 1,
+            "n_regime_days": 1,
+            "minimum_trades": 1,
+            "is_ann_return": np.nan,
+            "is_calmar": np.nan,
+            "n_trades": 0,
+            "window": window,
+        }
+
+    return fake
+
+
+@pytest.mark.parametrize("per_regime", [True, False])
+def test_fold_without_feasible_params_stays_in_cash(monkeypatch, config_test, per_regime):
+    """Sin θ factible el fold no truena: los tres regímenes quedan en efectivo el mes de prueba."""
+    from src.optimize import _run_walk_forward_fold
+
+    prices, regimes, window = _fold_inputs(config_test)
+    monkeypatch.setattr(
+        "src.optimize.optimize_regime", _fake_optimize(False, config_test["base_params"])
+    )
+    fold = _run_walk_forward_fold(window, prices, regimes, config_test, per_regime, seed=42)
+    assert set(fold["cash_regimes"]) == {"tendencia", "reversion", "crisis"}
+    assert fold["oos_trades"].empty
+    assert fold["trade_params"][["k_stop", "risk_per_trade"]].isna().all().all()
+    assert (fold["oos_equity"] == config_test["initial_capital"]).all()
+
+
+def test_infeasible_regime_falls_back_to_single_theta(monkeypatch, config_test):
+    """Un régimen sin θ factible usa el θ único de la ventana; nada queda en efectivo."""
+    from src.optimize import _run_walk_forward_fold
+
+    prices, regimes, window = _fold_inputs(config_test)
+    base = config_test["base_params"]
+    monkeypatch.setattr("src.optimize.optimize_regime", _fake_optimize(True, base))
+    fold = _run_walk_forward_fold(window, prices, regimes, config_test, True, seed=42)
+    assert fold["cash_regimes"] == []
+    assert all(params == base for params in fold["params_by_regime"].values())
+    assert fold["trade_params"]["k_stop"].eq(base["k_stop"]).all()
