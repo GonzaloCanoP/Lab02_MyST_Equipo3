@@ -239,6 +239,10 @@ tabla; si no hay diferencia entre regímenes, se documenta y se usa 1.0 en los t
 días, solo datos hasta t) y s_i, s_j tienen signo opuesto, se conserva la de mayor |s| y la otra se pone
 en 0; con |s_i| = |s_j|, ambas pasan a 0. Se aplica a s antes de `compose_target`. Razón: posiciones
 opuestas en activos casi equivalentes cancelan riesgo y pagan costos por duplicado.
+El conflicto se decide sobre la s original de cada activo, no de forma secuencial, así que el
+resultado no depende del orden de los activos. En cadenas (A pierde contra B, B pierde contra C) cae
+todo activo que pierda contra cualquier otro con el que entre en conflicto. El umbral se lee de
+`config["conflict_corr_threshold"]` (0.7 por defecto).
 *[PENDIENTE: confirmar el umbral 0.7 con la matriz de correlación de train.]*
 Con s_i = 0 resulta C_i = 0 aunque Estado ≠ 0. *[PENDIENTE con P1: una entrada con C_i = 0 no abre
 posición, no consume el armado y no cuenta como operación.]*
@@ -247,14 +251,17 @@ posición, no consume el armado y no cuenta como operación.]*
 - **Qué se rebalancea:** solo w^RP. Entre rebalanceos, w^RP se mantiene vigente; s_i y m(régimen) se
   actualizan cada día, para que una señal nueva se ejecute en t+1 sin esperar la siguiente revisión.
   *[PROPUESTA: confirmar con el equipo.]*
-- **Disparador híbrido:** en fechas de calendario (cada f días hábiles) se reestima Σ y se calcula el
-  w^RP candidato; se adopta solo si ‖w^RP_cand − w^RP_vigente‖₁ > δ.
-- **Valores iniciales:** f = 5 días hábiles, δ = 0.05. Barrido: f ∈ {1, 5, 10, 21, 63} y
-  δ ∈ {0.02, 0.05, 0.10, 0.20}, con retorno bruto, costo total, retorno neto y turnover realizado en
-  una sola figura. f y δ se resuelven con este barrido y no con Optuna.
-- **Decisión de f y δ:** una sola corrida en validation.
-- **Turnover:** T_t = ½ Σ |w_i,t − w_i,t−|, con w_t− el peso realizado después del drift. Costo anual
-  ≈ T̄ · f · 2c, con c = 0.125% + 0.02% por lado (SPEC punto 6).
+- **Disparador híbrido:** el primer día hábil de cada periodo de calendario (`rebalance_frequency`,
+  alias de pandas: "W" semanal, "M" mensual, "Q" trimestral) se reestima Σ y se calcula el w^RP
+  candidato; se adopta solo si ‖w^RP_cand − w^RP_vigente‖₁ > δ. La primera adopción ocurre cuando
+  hay `cov_window` días de historia.
+- **Valores iniciales:** frecuencia mensual ("M") y δ = 0.05. Barrido: frecuencia ∈ {semanal,
+  mensual, trimestral} y δ ∈ {0, 0.025, 0.05, 0.10, 0.20}, con retorno bruto, costo total, retorno
+  neto y turnover en una sola figura. La frecuencia y δ se resuelven con este barrido y no con Optuna.
+- **Decisión de frecuencia y δ:** una sola corrida en validation.
+- **Turnover:** T_t = ½ Σ |w_i,t − w_i,t−|, con w_t− el peso realizado después del drift. En el barrido
+  se reporta el turnover anual de los pesos w^RP adoptados (suma de T_t entre los años del bloque).
+  Costo anual ≈ turnover anual · 2c, con c = 0.125% + 0.02% por lado (SPEC punto 6).
 - **`resize_on_rebalance`:** `False` *[PENDIENTE: confirmar con P1]*. Consistente con SPEC punto 4: una
   posición abierta conserva su tamaño y Estado = 0 no la cierra. El rebalanceo solo cambia el tamaño de
   las entradas nuevas; su costo no entra al equity y se estima ex post con `turnover` sobre la
@@ -267,3 +274,4 @@ posición, no consume el armado y no cuenta como operación.]*
 |---|---|---|---|
 | 0.1 | 2026-10-04 | Plantilla | Equipo |
 | 0.2 | 2026-10-05 | Sección Portafolio (borrador P4) | Zanatta |
+| 0.3 | 2026-10-06 | Rebalanceo alineado con CONFIG (mensual, δ = 0.05, barrido W/M/Q × δ) y regla de conflictos independiente del orden | Zanatta |
