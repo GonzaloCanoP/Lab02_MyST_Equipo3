@@ -16,6 +16,7 @@ from src.portfolio import (
     inverse_vol_weights,
     resolve_signal_conflicts,
     performance_comparison,
+    portfolio_results,
     risk_contribution_comparison,
     risk_contributions,
     rebalance_sweep,
@@ -641,3 +642,29 @@ def test_performance_comparison_period_and_options(synthetic_prices, config_test
     assert list(full.index) == ["risk_parity", "equal"]
     assert (part["n_trades"] <= full["n_trades"]).all()
     assert not part["ann_return"].equals(full["ann_return"])
+
+
+# ---------------------------------------------------------------------------------------------
+# portfolio_results
+# ---------------------------------------------------------------------------------------------
+
+
+def test_portfolio_results_structure_and_matches_components(synthetic_prices, config_test):
+    params, regimes = _sweep_inputs(synthetic_prices, config_test)
+    index = synthetic_prices["A0"].index
+    config = {**config_test, "rebalance_bands": [0.0, 0.05], "rebalance_frequencies": ["M", "Q"]}
+    periods = {"train": (index[0], index[350]), "other": (index[351], index[-1])}
+    out = portfolio_results(synthetic_prices, params, regimes, config, 0.0, periods)
+
+    assert set(out) == {"weight_stability", "risk_contributions", "performance", "sweep"}
+    assert set(out["performance"]) == set(out["sweep"]) == {"train", "other"}
+    assert len(out["sweep"]["train"]) == 4
+    pd.testing.assert_frame_equal(
+        out["weight_stability"], weight_stability(synthetic_prices, config, period=periods["train"])
+    )
+    pd.testing.assert_frame_equal(
+        out["sweep"]["other"],
+        rebalance_sweep(synthetic_prices, params, regimes, config, [0.0, 0.05], ["M", "Q"], period=periods["other"]),
+    )
+    with pytest.raises(ValueError):
+        portfolio_results(synthetic_prices, params, regimes, config, 0.0, {})

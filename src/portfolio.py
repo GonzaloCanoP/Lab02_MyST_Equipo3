@@ -563,3 +563,49 @@ def performance_comparison(
             result.equity.loc[start:end], trades, rf, config["periods_per_year"]
         )
     return pd.DataFrame.from_dict(rows, orient="index")
+
+
+def portfolio_results(
+    prices: dict,
+    params_by_regime: dict,
+    regimes: pd.Series,
+    config: dict,
+    rf: pd.Series | float,
+    periods: dict[str, tuple],
+    trade_params: pd.DataFrame | None = None,
+) -> dict:
+    """Todos los resultados de P4 en un dict, listo para `results/portafolio.pkl`.
+
+    Parameters
+    ----------
+    periods : dict[str, (inicio, fin)]
+        Bloques a medir, p. ej. {"train": ...}. Cada bloque que se incluye se mira: el que decide
+        (validation) se pasa una sola vez, con los θ finales (SPEC punto 1).
+
+    Returns
+    -------
+    dict
+        "weight_stability" y "risk_contributions" (solo en el primer bloque de `periods`, que es
+        donde se reportan), y por bloque: "performance" (Risk Parity, pesos iguales y activos) y
+        "sweep" (frecuencia × banda de `config["rebalance_frequencies"]` y `["rebalance_bands"]`).
+    """
+    if not periods:
+        raise ValueError("periods no puede estar vacío")
+    first = next(iter(periods.values()))
+    return {
+        "weight_stability": weight_stability(prices, config, period=first),
+        "risk_contributions": risk_contribution_comparison(prices, config, period=first),
+        "performance": {
+            name: performance_comparison(
+                prices, params_by_regime, regimes, config, rf, trade_params, period
+            )
+            for name, period in periods.items()
+        },
+        "sweep": {
+            name: rebalance_sweep(
+                prices, params_by_regime, regimes, config,
+                config["rebalance_bands"], config["rebalance_frequencies"], trade_params, period,
+            )
+            for name, period in periods.items()
+        },
+    }
