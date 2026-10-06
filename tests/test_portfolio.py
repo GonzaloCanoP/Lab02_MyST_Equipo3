@@ -15,6 +15,7 @@ from src.portfolio import (
     estimate_cov,
     inverse_vol_weights,
     resolve_signal_conflicts,
+    risk_contribution_comparison,
     risk_contributions,
     rebalance_sweep,
     risk_parity_weights,
@@ -560,3 +561,43 @@ def test_weight_stability_period_restricts_reviews_and_does_not_modify_config(
     part = weight_stability(synthetic_prices, config_test, period=(index[300], index[-1]))
     assert (part["n_reviews"] < full["n_reviews"]).all()
     assert config_test == before
+
+
+# ---------------------------------------------------------------------------------------------
+# risk_contribution_comparison
+# ---------------------------------------------------------------------------------------------
+
+
+def test_risk_contribution_comparison_parity_equalizes_and_equal_does_not(
+    synthetic_prices, config_test
+):
+    out = risk_contribution_comparison(synthetic_prices, config_test)
+    names = list(synthetic_prices)
+    assert list(out.index) == ["risk_parity", "equal"]
+    np.testing.assert_allclose(out.loc["risk_parity", names], 1 / len(names), atol=1e-6)
+    np.testing.assert_allclose(out[names].sum(axis=1), 1.0, atol=1e-9)
+    assert out.loc["risk_parity", "spread"] < 1e-6
+    assert out.loc["equal", "spread"] > out.loc["risk_parity", "spread"]
+    # Risk Parity con volatilidades distintas pesa menos al activo más volátil: menor ex ante
+    # que 1/n solo si hay dispersión; aquí basta que sean positivos y finitos
+    assert (out["ann_vol"] > 0).all() and np.isfinite(out["ann_vol"]).all()
+
+
+def test_risk_contribution_comparison_period_and_manual_check(synthetic_prices, config_test):
+    index = synthetic_prices["A0"].index
+    period = (index[300], index[-1])
+    part = risk_contribution_comparison(synthetic_prices, config_test, period=period)
+    returns = np.log(pd.DataFrame({t: o["close"] for t, o in synthetic_prices.items()})).diff()
+    window, reviews = config_test["cov_window"], ~returns.index.to_period("M").duplicated()
+    shares = []
+    for pos in range(window, len(returns)):
+        if reviews[pos] and returns.index[pos] >= period[0]:
+            cov = estimate_cov(returns.iloc[pos - window + 1 : pos + 1], config_test["cov_method"])
+            rc = risk_contributions(equal_weights(list(returns.columns)), cov)
+            shares.append((rc / rc.sum()).to_numpy())
+    names = list(synthetic_prices)
+    np.testing.assert_allclose(part.loc["equal", names], np.vstack(shares).mean(axis=0), rtol=1e-9)
+    with pytest.raises(ValueError):
+        risk_contribution_comparison(
+            synthetic_prices, config_test, period=(index[0], index[1])
+        )

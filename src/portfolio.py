@@ -448,3 +448,52 @@ def weight_stability(prices: dict, config: dict, period: tuple | None = None) ->
         std = reviewed.std(ddof=1)
         rows[method] = {**std.to_dict(), "mean_std": float(std.mean()), "n_reviews": len(reviewed)}
     return pd.DataFrame.from_dict(rows, orient="index")
+
+
+def risk_contribution_comparison(
+    prices: dict, config: dict, period: tuple | None = None
+) -> pd.DataFrame:
+    """Contribución al riesgo de Risk Parity contra pesos iguales, medida con la Σ de cada revisión.
+
+    En cada fecha de revisión (primer día hábil de cada periodo de `rebalance_frequency`, con al
+    menos `cov_window` retornos) se estima Σ con `cov_method` y se calcula la parte del riesgo que
+    aporta cada activo, RC_i / σ_p, con los pesos de cada método. Risk Parity iguala esas partes
+    (1/n); pesos iguales no.
+
+    Returns
+    -------
+    pd.DataFrame
+        Filas "risk_parity" y "equal". Columnas: una por activo (parte media del riesgo),
+        `spread` (media del máximo menos el mínimo de las partes entre fechas) y `ann_vol`
+        (volatilidad anualizada media del portafolio ex ante).
+    """
+    returns = _log_returns(prices)
+    tickers = list(returns.columns)
+    window = config["cov_window"]
+    is_review = ~returns.index.to_period(config["rebalance_frequency"]).duplicated()
+    shares = {"risk_parity": [], "equal": []}
+    vols = {"risk_parity": [], "equal": []}
+    for pos in range(window, len(returns)):
+        date = returns.index[pos]
+        if not is_review[pos]:
+            continue
+        if period is not None and not pd.Timestamp(period[0]) <= date <= pd.Timestamp(period[1]):
+            continue
+        cov = estimate_cov(returns.iloc[pos - window + 1 : pos + 1], config["cov_method"])
+        weights = {"risk_parity": risk_parity_weights(cov), "equal": equal_weights(tickers)}
+        for method, w in weights.items():
+            rc = risk_contributions(w, cov)
+            sigma_p = rc.sum()
+            shares[method].append((rc / sigma_p).to_numpy())
+            vols[method].append(sigma_p * np.sqrt(config["periods_per_year"]))
+    rows = {}
+    for method, history in shares.items():
+        if not history:
+            raise ValueError("no hay fechas de revisión en el periodo pedido")
+        panel = np.vstack(history)
+        rows[method] = {
+            **dict(zip(tickers, panel.mean(axis=0))),
+            "spread": float((panel.max(axis=1) - panel.min(axis=1)).mean()),
+            "ann_vol": float(np.mean(vols[method])),
+        }
+    return pd.DataFrame.from_dict(rows, orient="index")
