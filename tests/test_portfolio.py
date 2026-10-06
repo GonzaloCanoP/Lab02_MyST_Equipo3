@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from src.backtest import run_backtest
+from src.signals import generate_signals
 from src.portfolio import (
     compose_target,
     equal_weights,
@@ -15,6 +16,7 @@ from src.portfolio import (
     inverse_vol_weights,
     resolve_signal_conflicts,
     risk_contributions,
+    rebalance_sweep,
     risk_parity_weights,
     sleeve_weights,
     turnover,
@@ -452,3 +454,72 @@ def test_conflict_correlation_uses_only_the_trailing_window_up_to_t(synthetic_pr
     for date, corr in seen:
         pos = index.get_loc(date)
         pd.testing.assert_frame_equal(corr, returns.iloc[pos - window + 1 : pos + 1].corr())
+
+
+# ---------------------------------------------------------------------------------------------
+# rebalance_sweep
+# ---------------------------------------------------------------------------------------------
+
+
+def _sweep_inputs(synthetic_prices, config_test):
+    index = synthetic_prices["A0"].index
+    params = dict.fromkeys(["tendencia", "reversion", "crisis"], config_test["base_params"])
+    return params, cyclic_regimes(index)
+
+
+def test_rebalance_sweep_shape_and_accounting(synthetic_prices, config_test):
+    params, regimes = _sweep_inputs(synthetic_prices, config_test)
+    out = rebalance_sweep(synthetic_prices, params, regimes, config_test, [0.0, 0.05], ["M", "Q"])
+    assert len(out) == 4
+    assert list(out.columns) == [
+        "frequency", "band", "n_rebalances", "turnover",
+        "gross_return", "total_cost", "net_return", "n_trades",
+    ]
+    assert (out["total_cost"] >= 0).all() and (out["turnover"] >= 0).all()
+    # bruto − neto = costos / capital inicial (costos ≥ 0 → bruto ≥ neto)
+    gap = out["gross_return"] - out["net_return"]
+    np.testing.assert_allclose(gap, out["total_cost"] / config_test["initial_capital"], rtol=1e-9)
+
+
+def test_rebalance_sweep_wide_band_blocks_rotation_and_more_rebalances_when_frequent(
+    synthetic_prices, config_test
+):
+    params, regimes = _sweep_inputs(synthetic_prices, config_test)
+    out = rebalance_sweep(synthetic_prices, params, regimes, config_test, [0.0, 10.0], ["M", "Q"])
+    wide = out[out["band"] == 10.0]
+    assert (wide["n_rebalances"] == 0).all() and (wide["turnover"] == 0).all()
+    tight = out[out["band"] == 0.0].set_index("frequency")
+    assert tight.loc["M", "n_rebalances"] >= tight.loc["Q", "n_rebalances"]
+
+
+def test_rebalance_sweep_matches_manual_run_and_restricts_to_period(synthetic_prices, config_test):
+    params, regimes = _sweep_inputs(synthetic_prices, config_test)
+    index = synthetic_prices["A0"].index
+    full = rebalance_sweep(synthetic_prices, params, regimes, config_test, [0.05], ["M"])
+    cfg = {**config_test, "rebalance_frequency": "M", "rebalance_band": 0.05}
+    signals = generate_signals(synthetic_prices, params, regimes, cfg)
+    trade_params = pd.DataFrame(
+        {k: config_test["base_params"][k] for k in ["k_stop", "reward_ratio", "max_holding", "risk_per_trade"]},
+        index=index,
+    )
+    panel = sleeve_weights(synthetic_prices, signals, regimes, cfg)
+    manual = run_backtest(synthetic_prices, signals, panel, trade_params, cfg)
+    assert full["net_return"].iloc[0] == pytest.approx(manual.equity.iloc[-1] / manual.equity.iloc[0] - 1)
+    assert full["n_trades"].iloc[0] == len(manual.trades)
+    part = rebalance_sweep(
+        synthetic_prices, params, regimes, config_test, [0.05], ["M"], period=(index[300], index[-1])
+    )
+    eq = manual.equity.loc[index[300]:]
+    assert part["net_return"].iloc[0] == pytest.approx(eq.iloc[-1] / eq.iloc[0] - 1)
+    assert part["n_trades"].iloc[0] <= full["n_trades"].iloc[0]
+
+
+def test_rebalance_sweep_rejects_invalid_inputs_and_keeps_config(synthetic_prices, config_test):
+    params, regimes = _sweep_inputs(synthetic_prices, config_test)
+    before = dict(config_test)
+    with pytest.raises(ValueError):
+        rebalance_sweep(synthetic_prices, params, regimes, config_test, [], ["M"])
+    with pytest.raises(ValueError):
+        rebalance_sweep(synthetic_prices, params, regimes, config_test, [-0.1], ["M"])
+    rebalance_sweep(synthetic_prices, params, regimes, config_test, [0.05], ["M"])
+    assert config_test == before
