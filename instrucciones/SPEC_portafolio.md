@@ -1,7 +1,7 @@
 # SPEC de portafolio — Lab 02 · Equipo 3 · Nivel C
 
-**Versión:** 0.1 · **Estado:** plantilla. P3 completa la sección "Régimen" y P4 la sección
-"Portafolio", cada una por PR, ANTES de implementar su módulo. Toda decisión se toma con train.
+**Versión:** 0.5 · **Estado:** Régimen y Portafolio completos y calibrados con train; validation y
+test sin correr. Toda decisión se toma con train.
 
 Complementa a `SPEC.md`. Las fórmulas base vienen del material del curso "Fundamentos Matemáticos de
 Risk Parity" y de la actividad de Market Regime Detection.
@@ -219,8 +219,11 @@ estabilidad de cada uno (desviación estándar del peso de cada activo entre reb
 - **Candidato inicial:** Ledoit-Wolf. Con n/T ≈ 0.06 el estimador muestral dispersa los eigenvalores de
   forma artificial; el encogimiento lo corrige con un δ* analítico, sin hiperparámetros extra.
 - **Decisión:** una sola corrida en validation (SPEC punto 1). Se elige el estimador con menor
-  desviación estándar promedio de los pesos; si la diferencia con Ledoit-Wolf es menor a
-  *[PENDIENTE: umbral, fijado antes de correr]*, se queda Ledoit-Wolf.
+  desviación estándar promedio de los pesos; si su desviación no es al menos **10% menor** que la de
+  Ledoit-Wolf, se queda Ledoit-Wolf (umbral relativo, fijado antes de correr validation).
+- **Evidencia en train (2026-10-06):** desviación estándar media del peso entre 48 revisiones
+  mensuales: Ledoit-Wolf 0.0230, muestral 0.0275 y EWMA 0.0274. Ledoit-Wolf es el más estable, en
+  línea con el candidato inicial.
 
 ### Agregación de señales
 
@@ -237,8 +240,21 @@ con s_i la fuerza de `SPEC.md` punto 3. Como Σ w^RP = 1, |s_i| ≤ 1 y m(régim
 
 Valores de referencia del material del curso. m(régimen) es un hiperparámetro de diseño que **no entra
 al espacio de búsqueda θ** de `SPEC.md` punto 7 (pocas observaciones de crisis en train; limita el data
-snooping). Se respalda con la tabla de Sharpe y MDD por régimen en train. *[PENDIENTE: confirmar con esa
-tabla; si no hay diferencia entre regímenes, se documenta y se usa 1.0 en los tres.]*
+snooping). Se respalda con la tabla de Sharpe y MDD por régimen en train.
+
+**Confirmación con train (2026-10-06):** θ base, Risk Parity y m = 1 en los tres regímenes, para medir
+la estrategia sin el multiplicador:
+
+| Régimen | Días | Retorno anualizado | Sharpe | MDD | Operaciones | Win rate |
+|---|---|---|---|---|---|---|
+| tendencia | 402 | 2.1% | 1.18 | −1.4% | 150 | 44.7% |
+| reversion | 278 | −1.6% | −0.83 | −2.8% | 103 | 37.9% |
+| crisis | 327 | −0.6% | −0.23 | −4.0% | 122 | 49.2% |
+
+Hay diferenciación: solo tendencia tiene ventaja, así que es el único régimen con exposición completa.
+Crisis tiene la mayor volatilidad y el peor drawdown, lo que respalda el multiplicador más bajo.
+Reversión tiene el peor Sharpe; aun así se mantienen los valores del curso y no se ajustan a esta
+tabla, para no convertir m en un parámetro optimizado con pocas observaciones.
 
 **Política ante señales en conflicto entre activos correlacionados:** si ρ_ij > 0.7 (ventana de 126
 días, solo datos hasta t) y s_i, s_j tienen signo opuesto, se conserva la de mayor |s| y la otra se pone
@@ -248,14 +264,18 @@ El conflicto se decide sobre la s original de cada activo, no de forma secuencia
 resultado no depende del orden de los activos. En cadenas (A pierde contra B, B pierde contra C) cae
 todo activo que pierda contra cualquier otro con el que entre en conflicto. El umbral se lee de
 `config["conflict_corr_threshold"]` (0.7 por defecto).
-*[PENDIENTE: confirmar el umbral 0.7 con la matriz de correlación de train.]*
-Con s_i = 0 resulta C_i = 0 aunque Estado ≠ 0. *[PENDIENTE con P1: una entrada con C_i = 0 no abre
+**Umbral confirmado con train (2026-10-06):** superan 0.7 AAPL-MSFT (0.76), MSFT-SMH (0.76) y AAPL-SMH
+(0.72); con la ρ móvil de 126 días, cada uno de esos pares está arriba de 0.7 alrededor del 40% de los
+días. AMD-SMH queda en 0.67 aunque SMH contiene a AMD. El umbral de 0.7 actúa sobre el trío
+AAPL/MSFT/SMH, que es casi el mismo riesgo, y coincide con el criterio de redundancia de `SPEC.md`
+punto 9.
+Con s_i = 0 resulta C_i = 0 aunque Estado ≠ 0. *[RESUELTO con P1: una entrada con C_i = 0 no abre
 posición, no consume el armado y no cuenta como operación.]*
 
 ### Rebalanceo
 - **Qué se rebalancea:** solo w^RP. Entre rebalanceos, w^RP se mantiene vigente; s_i y m(régimen) se
   actualizan cada día, para que una señal nueva se ejecute en t+1 sin esperar la siguiente revisión.
-  *[PROPUESTA: confirmar con el equipo.]*
+  Confirmado por el equipo (2026-10-06).
 - **Disparador híbrido:** el primer día hábil de cada periodo de calendario (`rebalance_frequency`,
   alias de pandas: "W" semanal, "M" mensual, "Q" trimestral) se reestima Σ y se calcula el w^RP
   candidato; se adopta solo si ‖w^RP_cand − w^RP_vigente‖₁ > δ. La primera adopción ocurre cuando
@@ -267,7 +287,7 @@ posición, no consume el armado y no cuenta como operación.]*
 - **Turnover:** T_t = ½ Σ |w_i,t − w_i,t−|, con w_t− el peso realizado después del drift. En el barrido
   se reporta el turnover anual de los pesos w^RP adoptados (suma de T_t entre los años del bloque).
   Costo anual ≈ turnover anual · 2c, con c = 0.125% + 0.02% por lado (SPEC punto 6).
-- **`resize_on_rebalance`:** `False` *[PENDIENTE: confirmar con P1]*. Consistente con SPEC punto 4: una
+- **`resize_on_rebalance`:** `False`, acordado con P1. Consistente con SPEC punto 4: una
   posición abierta conserva su tamaño y Estado = 0 no la cierra. El rebalanceo solo cambia el tamaño de
   las entradas nuevas; su costo no entra al equity y se estima ex post con `turnover` sobre la
   exposición realizada. Limitación que se declara en el reporte.
@@ -281,3 +301,4 @@ posición, no consume el armado y no cuenta como operación.]*
 | 0.2 | 2026-10-05 | Sección Portafolio (borrador P4) | Zanatta |
 | 0.3 | 2026-10-06 | Rebalanceo alineado con CONFIG (mensual, δ = 0.05, barrido W/M/Q × δ) y regla de conflictos independiente del orden | Zanatta |
 | 0.4 | 2026-10-06 | Σ de Risk Parity y correlaciones por régimen con retornos simples; las variables de régimen siguen en log-retornos por la aditividad de `efficiency` (sin cambio en la etiqueta) | Cano |
+| 0.5 | 2026-10-06 | Decisiones de P4 con evidencia de train: umbral del estimador (10% relativo), m(régimen) 1.0/0.7/0.3 confirmado con la tabla por régimen, umbral de conflictos 0.7 confirmado con la correlación de train, rebalanceo solo de w^RP; acuerdos con P1 cerrados | Cano (con el equipo) |
