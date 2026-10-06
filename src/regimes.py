@@ -43,6 +43,9 @@ def _market_log_returns(prices: dict[str, pd.DataFrame]) -> pd.Series:
     SPEC_portafolio, Régimen, "Serie de mercado". El índice se rebalancea a diario, así que su
     retorno simple es la media de los retornos simples. `skipna=False`: si falta un activo en t, el
     retorno del índice queda NaN en vez de promediar con menos activos.
+
+    Es la única parte del proyecto con log-retornos: `efficiency` necesita que la suma de la ventana
+    sea el movimiento total, Σ ℓ_k = ln(P_t / P_t−w), y eso solo se cumple con logaritmos.
     """
     close = pd.DataFrame({ticker: df["close"] for ticker, df in prices.items()})
     simple = close.pct_change(fill_method=None).mean(axis=1, skipna=False)
@@ -461,12 +464,12 @@ def regime_results(prices: dict, regimes: pd.Series, config: dict) -> dict:
     viterbi = viterbi_path(hmm, operable)
     both = filtered.notna() & viterbi.notna()
 
-    log_returns = pd.DataFrame(
-        {ticker: np.log(df["close"]).diff() for ticker, df in prices.items()}
+    returns = pd.DataFrame(
+        {ticker: df["close"].pct_change(fill_method=None) for ticker, df in prices.items()}
     ).loc[train_start:train_end]
-    train_labels = regimes.reindex(log_returns.index)
+    train_labels = regimes.reindex(returns.index)
     corr_by_regime = {
-        name: log_returns[train_labels == name].corr()
+        name: returns[train_labels == name].corr()
         for name in REGIME_NAMES
         if (train_labels == name).sum() > 1
     }

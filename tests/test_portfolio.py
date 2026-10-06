@@ -320,7 +320,7 @@ def test_risk_parity_wiring_matches_manual_computation(synthetic_prices, config_
     panel = sleeve_weights(synthetic_prices, {"strength": strength}, regimes, config_test)
 
     closes = pd.DataFrame({t: ohlcv["close"] for t, ohlcv in synthetic_prices.items()})
-    returns = np.log(closes).diff()
+    returns = closes.pct_change(fill_method=None)
     for pos in (150, 300, 450):
         w_rp = risk_parity_weights(estimate_cov(returns.iloc[pos - 59 : pos + 1], config_test["cov_method"]))
         multiplier = config_test["regime_multiplier"][regimes.iloc[pos]]
@@ -455,7 +455,7 @@ def test_conflict_correlation_uses_only_the_trailing_window_up_to_t(synthetic_pr
 
     assert seen  # hubo días con señales opuestas
     closes = pd.DataFrame({t: ohlcv["close"] for t, ohlcv in synthetic_prices.items()})
-    returns = np.log(closes).diff()
+    returns = closes.pct_change(fill_method=None)
     window = config_test["cov_window"]
     for date, corr in seen:
         pos = index.get_loc(date)
@@ -543,7 +543,7 @@ def test_weight_stability_shape_and_manual_check(synthetic_prices, config_test):
     assert (out[list(synthetic_prices)] >= 0).all().all()
     np.testing.assert_allclose(out["mean_std"], out[list(synthetic_prices)].mean(axis=1))
     # comprobación manual con Ledoit-Wolf: pesos en cada primer día hábil del mes, sin banda
-    returns = np.log(pd.DataFrame({t: o["close"] for t, o in synthetic_prices.items()})).diff()
+    returns = pd.DataFrame({t: o["close"] for t, o in synthetic_prices.items()}).pct_change(fill_method=None)
     window = config_test["cov_window"]
     reviews = ~returns.index.to_period("M").duplicated()
     rows = [
@@ -591,7 +591,7 @@ def test_risk_contribution_comparison_period_and_manual_check(synthetic_prices, 
     index = synthetic_prices["A0"].index
     period = (index[300], index[-1])
     part = risk_contribution_comparison(synthetic_prices, config_test, period=period)
-    returns = np.log(pd.DataFrame({t: o["close"] for t, o in synthetic_prices.items()})).diff()
+    returns = pd.DataFrame({t: o["close"] for t, o in synthetic_prices.items()}).pct_change(fill_method=None)
     window, reviews = config_test["cov_window"], ~returns.index.to_period("M").duplicated()
     shares = []
     for pos in range(window, len(returns)):

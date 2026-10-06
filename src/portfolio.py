@@ -38,7 +38,7 @@ def estimate_cov(returns: pd.DataFrame, method: str) -> pd.DataFrame:
     Parameters
     ----------
     returns : pd.DataFrame
-        Log-retornos diarios, fechas × tickers. Nunca precios (CLAUDE.md, sección 4 y Paso 2).
+        Retornos simples diarios, fechas × tickers. Nunca precios (CLAUDE.md, sección 4 y Paso 2).
         No se rellenan huecos: si hay NaN, se lanza un error.
     method : str
         "sample" (muestral), "ewma" (λ = 0.99, media cero) o "ledoit_wolf" (encogimiento).
@@ -222,10 +222,14 @@ def resolve_signal_conflicts(
     return resolved
 
 
-def _log_returns(prices: dict) -> pd.DataFrame:
-    """Log-retornos diarios del `close` de cada activo (nunca precios; Paso 2)."""
+def _simple_returns(prices: dict) -> pd.DataFrame:
+    """Retornos simples diarios del `close` de cada activo (nunca precios; Paso 2).
+
+    Simples y no logarítmicos: el retorno del portafolio es lineal en ellos (r_p = Σ w_i r_i), así
+    que σ_p² = wᵀΣw y las contribuciones al riesgo son exactas.
+    """
     closes = pd.DataFrame({ticker: ohlcv["close"] for ticker, ohlcv in prices.items()})
-    return np.log(closes).diff()
+    return closes.pct_change(fill_method=None)
 
 
 def _base_weights(returns: pd.DataFrame, config: dict, method: str) -> pd.DataFrame:
@@ -299,7 +303,7 @@ def sleeve_weights(
     if method not in ("risk_parity", "equal"):
         raise ValueError(f"method desconocido: {method!r}")
     multiplier = config["regime_multiplier"]
-    returns = _log_returns(prices)
+    returns = _simple_returns(prices)
     dates, tickers = returns.index, list(returns.columns)
 
     labels = regimes.reindex(dates)
@@ -379,7 +383,7 @@ def rebalance_sweep(
         trade_params = pd.DataFrame(
             {k: config["base_params"][k] for k in _TRADE_PARAM_KEYS}, index=dates
         )
-    returns = _log_returns(prices)
+    returns = _simple_returns(prices)
     start, end = (dates[0], dates[-1]) if period is None else (pd.Timestamp(period[0]), pd.Timestamp(period[1]))
 
     rows = []
@@ -437,7 +441,7 @@ def weight_stability(prices: dict, config: dict, period: tuple | None = None) ->
         Una fila por estimador; columnas: una por activo (desviación estándar de su peso),
         `mean_std` (promedio entre activos) y `n_reviews` (revisiones usadas).
     """
-    returns = _log_returns(prices)
+    returns = _simple_returns(prices)
     is_review = ~returns.index.to_period(config["rebalance_frequency"]).duplicated()
     rows = {}
     for method in ESTIMATORS:
@@ -468,7 +472,7 @@ def risk_contribution_comparison(
         `spread` (media del máximo menos el mínimo de las partes entre fechas) y `ann_vol`
         (volatilidad anualizada media del portafolio ex ante).
     """
-    returns = _log_returns(prices)
+    returns = _simple_returns(prices)
     tickers = list(returns.columns)
     window = config["cov_window"]
     is_review = ~returns.index.to_period(config["rebalance_frequency"]).duplicated()

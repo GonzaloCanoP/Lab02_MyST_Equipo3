@@ -17,6 +17,9 @@ Risk Parity" y de la actividad de Market Regime Detection.
 
 - **Por qué:** no requiere datos extra (`data/` está congelado y `main.py` no usa red) y mide el
   régimen del universo que se opera, no el de un índice externo.
+- **Por qué log-retornos aquí:** `efficiency` necesita que la suma de la ventana sea el movimiento
+  total, Σ ℓ_k = ln(P_t / P_t−w), y eso solo se cumple con log-retornos. Es la única excepción: el
+  resto del proyecto (Σ de Risk Parity, correlaciones, métricas) usa retornos simples.
 - **Limitación declarada:** 5 de los 8 activos son tecnología (`SPEC.md` punto 1), así que el
   régimen refleja sobre todo a ese sector.
 
@@ -201,7 +204,9 @@ Formulación convexa de Spinu (2013):
 
     min_{y > 0}  ½ yᵀΣy − (1/n) Σ ln y_i,        w^RP = y / Σ y_j
 
-Σ se estima sobre log-retornos diarios del `close`, nunca sobre precios, y solo con datos hasta t.
+Σ se estima sobre retornos simples diarios del `close`, nunca sobre precios, y solo con datos hasta
+t. Simples y no logarítmicos: el retorno del portafolio es lineal en ellos (r_p = Σ w_i r_i), así que
+σ_p² = wᵀΣw y las contribuciones al riesgo son exactas.
 Comparaciones: volatilidad inversa (versión naive) y pesos iguales (1/8).
 
 ### Estimador de covarianza
@@ -275,3 +280,4 @@ posición, no consume el armado y no cuenta como operación.]*
 | 0.1 | 2026-10-04 | Plantilla | Equipo |
 | 0.2 | 2026-10-05 | Sección Portafolio (borrador P4) | Zanatta |
 | 0.3 | 2026-10-06 | Rebalanceo alineado con CONFIG (mensual, δ = 0.05, barrido W/M/Q × δ) y regla de conflictos independiente del orden | Zanatta |
+| 0.4 | 2026-10-06 | Σ de Risk Parity y correlaciones por régimen con retornos simples; las variables de régimen siguen en log-retornos por la aditividad de `efficiency` (sin cambio en la etiqueta) | Cano |

@@ -177,7 +177,7 @@ Parity deja de serlo) y rebalancear siempre (el costo domina el P&L).
 - PRIMERA TAREA, antes de programar: completar la sección "Portafolio" de `SPEC_portafolio.md`
   (estimador candidato, valores de m(régimen), política de conflictos, disparador de rebalanceo y
   `resize_on_rebalance` acordado con P1) e integrarla a `main` por PR.
-- Retornos para Σ: log-retornos diarios del `close` de cada activo de `data/`, vía `load_prices`.
+- Retornos para Σ: retornos simples diarios del `close` de cada activo de `data/`, vía `load_prices`.
 - `risk_parity_weights`: Spinu con `scipy.optimize.minimize` (L-BFGS-B con cota inferior positiva) o
   Newton; después normalizar.
 - `estimate_cov`: implementar `"sample"`, `"ewma"` y `"ledoit_wolf"` (sklearn `LedoitWolf`). Comparar la
