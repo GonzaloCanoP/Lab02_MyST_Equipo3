@@ -476,6 +476,9 @@ def regime_results(prices: dict, regimes: pd.Series, config: dict) -> dict:
         if (train_labels == name).sum() > 1
     }
     operable_labels = regimes.reindex(operable.index)
+    # Bloques sin fechas (test cuando los datos se recortan antes de la corrida final) se omiten.
+    blocks = {name: (start, end) for name, (start, end) in blocks.items()
+              if operable_labels.loc[start:end].notna().any()}
     by_block = {}
     for block, (start, end) in blocks.items():
         result = regime_validation(operable.loc[start:end], operable_labels.loc[start:end])

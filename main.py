@@ -1,21 +1,47 @@
 """Ejecuta el proyecto completo sin intervención ni red: `python main.py`.
 
-Carga → auditoría → régimen → corrida base → estudios de diagnóstico → walk-forward → backtests
-finales (Risk Parity y pesos iguales) → métricas → impacto de mercado y auditoría de sesgos →
-`results/` y `docs/figuras/` (CLAUDE.md, sección 9).
+Carga → auditoría → régimen → portafolio y corrida base (train) → estudios de diagnóstico →
+robustez (sensibilidad, costos, pregunta 1) → walk-forward → backtests finales (Risk Parity, pesos
+iguales, activos individuales y buy & hold) → métricas por bloque → impacto de mercado y auditoría
+de sesgos → `results/` y `docs/figuras/` (CLAUDE.md, sección 9).
+
+Con `CONFIG["final_run"] = False` los datos se recortan al fin de validation: test no se toca. La
+corrida única de test se hace con `final_run = True`, con los θ congelados y el hash del commit
+registrado antes (SPEC punto 1).
 """
 
 import pickle
+import subprocess
+import time
 from pathlib import Path
 
 import pandas as pd
 
 from src.backtest import market_impact, run_backtest
 from src.data import audit_prices, block_dates, download_prices, load_prices, load_risk_free
-from src.metrics import compute_metrics, drawdown_series, returns_table
-from src.optimize import diagnostic_study, select_plateau, walk_forward, wf_efficiency
+from src.metrics import (
+    breakeven_winrate,
+    buy_and_hold_equity,
+    compute_metrics,
+    drawdown_series,
+    exposure_metrics,
+    metrics_by_block,
+    returns_table,
+)
+from src.optimize import (
+    cost_sweep,
+    diagnostic_study,
+    select_plateau,
+    sensitivity,
+    single_indicator_comparison,
+    surface_grid,
+    walk_forward,
+    walk_forward_signals,
+    wf_efficiency,
+)
 from src.plots import (
     plot_corr_by_regime,
+    plot_cost_curve,
     plot_drawdown,
     plot_equity,
     plot_equity_regimes,
@@ -26,22 +52,28 @@ from src.plots import (
     plot_regime_timeline,
     plot_returns_table,
     plot_risk_contributions,
+    plot_sensitivity,
+    plot_signal_heatmap,
     plot_slices,
+    plot_surface_3d,
 )
 from src.portfolio import (
-       portfolio_results,
-       risk_contribution_plot_frame,
-       sleeve_weights,
-       sweep_plot_frame,
-   )
+    portfolio_results,
+    risk_contribution_plot_frame,
+    sleeve_weights,
+    sweep_plot_frame,
+)
 from src.regimes import REGIME_NAMES, label_regimes, regime_performance, regime_results
-from src.signals import generate_signals
+from src.signals import compute_indicators, generate_signals, sma_macd_vote_correlation
 
 SEED = 42
 
 # Todos los valores fijos del SPEC. Ningún módulo de src/ los escribe a mano: los recibe en `config`.
 CONFIG = {
     "seed": SEED,
+    # True solo para la corrida única de test (θ congelados y hash registrado); con False los datos
+    # se recortan al fin de validation y test no se toca.
+    "final_run": False,
     # Datos (SPEC punto 1, CLAUDE.md sección 3)
     "tickers": ["AAPL", "MSFT", "META", "AMD", "XOM", "SMH", "GLD", "COPX"],
     "risk_free_ticker": "^IRX",
@@ -96,9 +128,10 @@ CONFIG = {
     "n_trials_diagnostic": 200,  # random y TPE sobre todo train
     "n_trials_wf": 150,  # por régimen y por ventana
     "plateau_top_frac": 0.10,
-    "min_trades_per_window": 24,  # por activo, en 6 meses; prorrateado por régimen
+    "min_trades_per_window": 24,  # por cada 6 meses de ventana, sumando los 8 activos
     "min_regime_days": 21,  # por debajo se usa el θ único de la ventana
     "embargo_days": 5,
+    "surface_points": 8,  # valores por dimensión de la superficie 3D (P2, tarea 13)
     # Walk-forward (SPEC punto 1)
     "wf_train_months": 6,
     "wf_test_months": 1,
@@ -118,16 +151,13 @@ CONFIG = {
     "regime_hmm_n_iter": 200,  # iteraciones máximas de EM del HMM
     "regime_hmm_n_init": 10,  # reinicios del HMM; se queda el de mayor verosimilitud
     # Portafolio (SPEC_portafolio, P4)
-    "regime_multiplier": {  # PENDIENTE: lo define P4 en SPEC_portafolio.md
-        "tendencia": 1.0,
-        "reversion": 0.7,
-        "crisis": 0.3,
-    },
-    "cov_method": "ledoit_wolf",  # PENDIENTE: lo define P4 en SPEC_portafolio.md
-    "cov_window": 126,  # PENDIENTE: lo define P4 en SPEC_portafolio.md
-    "rebalance_frequency": "M",  # PENDIENTE: lo define P4 en SPEC_portafolio.md
-    "rebalance_band": 0.05,  # PENDIENTE: lo define P4 en SPEC_portafolio.md
-    "resize_on_rebalance": False,  # PENDIENTE: lo acuerdan P1 y P4
+    "regime_multiplier": {"tendencia": 1.0, "reversion": 0.7, "crisis": 0.3},
+    "cov_method": "ledoit_wolf",
+    "cov_window": 126,  # días hábiles, mayor que la SMA lenta máxima
+    "rebalance_frequency": "M",  # revisión mensual de w^RP (disparador híbrido)
+    "rebalance_band": 0.05,  # δ: se adopta el w^RP nuevo solo si ‖Δw‖₁ > δ
+    "conflict_corr_threshold": 0.7,  # ρ sobre la que se resuelven señales opuestas
+    "resize_on_rebalance": False,  # acordado por P1 y P4
     # Barridos y robustez
     "sensitivity_pct": 0.20,
     "cost_sweep_bps": list(range(0, 105, 5)),  # ida y vuelta, 0 a 100 bps
@@ -140,8 +170,13 @@ CONFIG = {
 TRADE_PARAM_KEYS = ["k_stop", "reward_ratio", "max_holding", "risk_per_trade"]
 
 
+def log(message: str) -> None:
+    """Avance de la corrida con la hora, para seguir las etapas largas."""
+    print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
+
+
 def save_results(obj: object, name: str, config: dict) -> None:
-    """Guarda un resultado en `results/<name>.pkl` para que el notebook solo lo cargue."""
+    """Guarda un resultado en `results/<name>.pkl` para que los notebooks solo lo carguen."""
     results_dir = Path(config["results_dir"])
     results_dir.mkdir(parents=True, exist_ok=True)
     with open(results_dir / f"{name}.pkl", "wb") as f:
@@ -155,10 +190,17 @@ def save_figure(fig, name: str, config: dict) -> None:
     fig.savefig(figures_dir / f"{name}.png", dpi=150)
 
 
-def stage_load(config: dict) -> tuple[dict, object, object]:
-    """Carga precios y tasa libre de riesgo, y audita los datos.
+def active_blocks(prices: dict, config: dict) -> dict[str, tuple]:
+    """Bloques con datos en esta corrida: sin `final_run`, test no aparece."""
+    last = next(iter(prices.values())).index[-1]
+    return {name: (start, end) for name, (start, end) in block_dates(config).items() if start <= last}
 
-    Solo descarga si falta algún archivo en `data/`; con los datos congelados no usa red.
+
+def stage_load(config: dict) -> tuple[dict, pd.Series, pd.DataFrame]:
+    """Carga precios y tasa libre de riesgo y audita los datos completos.
+
+    Solo descarga si falta algún archivo en `data/`. Sin `final_run`, precios y tasa se recortan al
+    fin de validation después de la auditoría, así que ninguna etapa posterior ve test.
     """
     symbols = config["tickers"] + [config["risk_free_ticker"]]
     data_dir = Path(config["data_dir"])
@@ -167,20 +209,15 @@ def stage_load(config: dict) -> tuple[dict, object, object]:
     prices = load_prices(config["tickers"], data_dir=config["data_dir"])
     rf = load_risk_free(data_dir=config["data_dir"])
     audit = audit_prices(prices)
+    if not config["final_run"]:
+        cut = block_dates(config)["validation"][1]
+        prices = {ticker: df.loc[:cut] for ticker, df in prices.items()}
+        rf = rf.loc[:cut]
     return prices, rf, audit
 
 
-def stage_regimes(prices: dict, config: dict):
-    """Etiqueta de régimen filtrada y causal para todas las fechas (P3)."""
-    return label_regimes(prices, config)
-
-
-def stage_regime_report(prices: dict, regimes, config: dict) -> dict:
-    """Resultados y figuras de régimen (P3): comparación de métodos, validación y tarea 4.
-
-    La tabla comparativa usa train y validation; la validación de la etiqueta operable reporta
-    además su % de tiempo en test (estabilidad fuera de muestra, P3 tarea 10).
-    """
+def stage_regime_report(prices: dict, regimes: pd.Series, config: dict) -> dict:
+    """Resultados y figuras de régimen (P3): comparación de métodos, validación y tarea 4."""
     results = regime_results(prices, regimes, config)
     save_results(results, "regimen", config)
     train_start, train_end = block_dates(config)["train"]
@@ -202,30 +239,20 @@ def stage_regime_report(prices: dict, regimes, config: dict) -> dict:
     return results
 
 
-def stage_diagnostic_figures(diagnostics: dict, config: dict) -> None:
-    """Figuras del estudio TPE de diagnóstico (P2): historia, importancia y slice plots."""
-    study = diagnostics["studies"]["tpe"]
-    save_figure(plot_optimization_history(study), "diagnostico_historia_tpe", config)
+def stage_portfolio(prices: dict, rf: pd.Series, regimes: pd.Series, config: dict) -> dict:
+    """Resultados de P4 con θ base, solo en train. Validation se mide con los θ finales."""
+    train = block_dates(config)["train"]
+    params = dict.fromkeys(REGIME_NAMES, config["base_params"])
+    results = portfolio_results(prices, params, regimes, config, rf, {"train": train})
+    save_results(results, "portafolio", config)
     save_figure(
-        plot_param_importance(study, config["seed"]), "diagnostico_importancia_tpe", config
+        plot_risk_contributions(risk_contribution_plot_frame(results["risk_contributions"])),
+        "portafolio_contribuciones_riesgo",
+        config,
     )
-    save_figure(plot_slices(study), "diagnostico_slices_tpe", config)
-
-
-def stage_regime_performance(wf: dict, regimes, rf, config: dict) -> dict:
-    """θ por régimen contra θ único y métricas por régimen, fuera de muestra (P3, pregunta 5)."""
-    performance = regime_performance(wf["runs"], regimes, rf, config)
-    save_results(performance, "regimen_desempeno", config)
-    blocks = block_dates(config)
-    curves = {
-        "θ por régimen": wf["runs"][("rolling", True)]["oos_equity"],
-        "θ único": wf["runs"][("rolling", False)]["oos_equity"],
-    }
-    save_figure(plot_equity(curves, blocks), "regimen_theta_por_regimen_vs_unico", config)
-    save_figure(
-        plot_equity_regimes(curves["θ por régimen"], regimes), "regimen_equity_oos", config
-    )
-    return performance
+    sweep = sweep_plot_frame(results["sweep"]["train"], train, config)
+    save_figure(plot_rebalance_sweep(sweep), "portafolio_barrido_rebalanceo", config)
+    return results
 
 
 def stage_base_run(prices: dict, config: dict) -> dict:
@@ -271,49 +298,6 @@ def stage_base_run(prices: dict, config: dict) -> dict:
     return {"results": results, "equity": equity, "drawdowns": drawdowns}
 
 
-def stage_diagnostics(prices: dict, config: dict) -> dict:
-    """Estudios de diagnóstico sobre train con θ único: random search y TPE (P2)."""
-    studies = {
-        sampler: diagnostic_study(
-            prices, config, sampler, config["n_trials_diagnostic"], config["seed"]
-        )
-        for sampler in ("random", "tpe")
-    }
-    plateau = select_plateau(studies["tpe"], config["plateau_top_frac"])
-    return {"studies": studies, "plateau": plateau}
-
-
-def stage_walk_forward(prices: dict, regimes, config: dict) -> dict:
-    """Walk-forward rolling y anchored, por régimen y con θ único (P2)."""
-    runs = {
-        (mode, per_regime): walk_forward(prices, regimes, config, mode=mode, per_regime=per_regime)
-        for mode in ("rolling", "anchored")
-        for per_regime in (True, False)
-    }
-    efficiency = {key: wf_efficiency(run) for key, run in runs.items()}
-    return {"runs": runs, "efficiency": efficiency}
-
-
-def stage_final_backtests(prices: dict, regimes, wf: dict, config: dict) -> dict:
-    """Backtests finales con θ congelados: Risk Parity contra pesos iguales.
-
-    PENDIENTE: las llaves de la salida de `walk_forward` ("params_by_regime", "trade_params") se
-    acuerdan con P2 al integrar `optimize.py`.
-    """
-    main_run = wf["runs"][("rolling", True)]
-    signals = generate_signals(prices, main_run["params_by_regime"], regimes, config)
-    return {
-        method: run_backtest(
-            prices,
-            signals,
-            sleeve_weights(prices, signals, regimes, config, method=method),
-            main_run["trade_params"],
-            config,
-        )
-        for method in ("risk_parity", "equal")
-    }
-
-
 def stage_save_base_run(base_run: dict, config: dict) -> None:
     """Guarda la corrida base y sus figuras: activos individuales y pesos iguales por separado."""
     save_results(base_run, "corrida_base", config)
@@ -331,65 +315,270 @@ def stage_save_base_run(base_run: dict, config: dict) -> None:
             config,
         )
 
-def stage_portfolio(prices: dict, rf, regimes, config: dict) -> dict:
-       """Resultados de P4 con θ base, solo en train. Validation se mide una vez con los θ finales."""
-       blocks = block_dates(config)
-       params = dict.fromkeys(REGIME_NAMES, config["base_params"])
-       results = portfolio_results(prices, params, regimes, config, 0.0, {"train": blocks["train"]})
-       save_results(results, "portafolio", config)
-       save_figure(
-           plot_risk_contributions(risk_contribution_plot_frame(results["risk_contributions"])),
-           "portafolio_contribuciones_riesgo",
-           config,
-       )
-       sweep = sweep_plot_frame(results["sweep"]["train"], blocks["train"], config)
-       save_figure(plot_rebalance_sweep(sweep), "portafolio_barrido_rebalanceo", config)
-       return results
 
-
-def stage_report(backtests: dict, rf, config: dict) -> None:
-    """Calcula métricas y guarda resultados en `results/`; las figuras van a `docs/figuras/`."""
-    metrics = {
-        name: compute_metrics(result.equity, result.trades, rf, config["periods_per_year"])
-        for name, result in backtests.items()
+def _study_summary(study) -> dict:
+    """Lo que se reporta de un estudio de Optuna: N, factibles, tiempo y la tabla de pruebas."""
+    return {
+        "user_attrs": dict(study.user_attrs),
+        "trials": study.trials_dataframe(attrs=("number", "value", "params", "user_attrs")),
     }
-    save_results({"backtests": backtests, "metrics": metrics}, "final_backtests", config)
-    labels = {"risk_parity": "Risk Parity", "equal": "Pesos iguales"}
+
+
+def stage_diagnostics(prices: dict, config: dict) -> dict:
+    """Estudios de diagnóstico sobre train con θ único: random y TPE, meseta y superficie (P2)."""
+    studies = {
+        sampler: diagnostic_study(
+            prices, config, sampler, config["n_trials_diagnostic"], config["seed"]
+        )
+        for sampler in ("random", "tpe")
+    }
+    plateau = select_plateau(studies["tpe"], config["plateau_top_frac"])
+    surface = surface_grid(
+        prices, config, studies["random"], studies["tpe"], config["seed"], config["surface_points"]
+    )
+    study = studies["tpe"]
+    save_figure(plot_optimization_history(study), "diagnostico_historia_tpe", config)
     save_figure(
-        plot_equity(
-            {labels[name]: result.equity for name, result in backtests.items()}, block_dates(config)
-        ),
-        "final_equity",
+        plot_param_importance(study, config["seed"]), "diagnostico_importancia_tpe", config
+    )
+    save_figure(plot_slices(study), "diagnostico_slices_tpe", config)
+    save_figure(
+        plot_surface_3d(surface["grid"], surface["x"], surface["y"]),
+        "diagnostico_superficie_random",
         config,
     )
-    save_figure(
-        plot_drawdown(
-            {labels[name]: drawdown_series(result.equity) for name, result in backtests.items()}
+    diagnostics = {
+        "studies": {name: _study_summary(s) for name, s in studies.items()},
+        "plateau": plateau,
+        "surface": surface,
+    }
+    save_results(diagnostics, "diagnostico", config)
+    return diagnostics
+
+
+def stage_robustness(prices: dict, plateau: dict, config: dict) -> dict:
+    """Sensibilidad ±20%, curva de costos y pregunta 1 con el θ* de la meseta, sobre train.
+
+    θ* es el del diagnóstico (θ único, régimen ignorado), así que se evalúa igual: una sola
+    etiqueta en todas las fechas. También se reporta la correlación SMA–MACD de SPEC punto 9.
+    """
+    train = block_dates(config)["train"]
+    dates = next(iter(prices.values())).index
+    params = dict.fromkeys(REGIME_NAMES, plateau)
+    labels = pd.Series(REGIME_NAMES[0], index=dates)
+    robustness = {
+        "theta": plateau,
+        "sensitivity": sensitivity(
+            params, prices, labels, config, config["sensitivity_pct"], period=train
         ),
+        "cost_curve": cost_sweep(params, prices, labels, config, config["cost_sweep_bps"], train),
+        "single_indicator": single_indicator_comparison(params, prices, labels, config, train),
+        "sma_macd_correlation": sma_macd_vote_correlation(
+            prices, config["base_params"], config, train
+        ),
+    }
+    save_results(robustness, "robustez", config)
+    save_figure(plot_sensitivity(robustness["sensitivity"]), "robustez_sensibilidad", config)
+    curve = robustness["cost_curve"]
+    save_figure(plot_cost_curve(curve, curve["base_cost_bps"].iloc[0]), "robustez_costos", config)
+    return robustness
+
+
+def _fold_table(run: dict) -> pd.DataFrame:
+    """Una fila por ventana: fechas, Calmar y retorno IS contra OOS, operaciones y efectivo."""
+    rows = []
+    for fold in run["folds"]:
+        rows.append(
+            {
+                "fold": fold["fold"],
+                "test_start": fold["test_start"],
+                "is_calmar": fold["is_metrics"]["calmar"],
+                "oos_calmar": fold["oos_metrics"]["calmar"],
+                "is_ann_return": fold["is_metrics"]["ann_return"],
+                "oos_ann_return": fold["oos_metrics"]["ann_return"],
+                "oos_trades": len(fold["oos_trades"]),
+                "cash_regimes": ", ".join(fold["cash_regimes"]),
+                "n_trials": fold["n_trials_total"],
+                "seconds": fold["elapsed_seconds"],
+            }
+        )
+    return pd.DataFrame(rows).set_index("fold")
+
+
+def stage_walk_forward(prices: dict, regimes: pd.Series, config: dict) -> dict:
+    """Walk-forward rolling y anchored, por régimen y con θ único (P2)."""
+    runs = {}
+    for mode in ("rolling", "anchored"):
+        for per_regime in (True, False):
+            log(f"walk-forward {mode}, {'por régimen' if per_regime else 'θ único'}")
+            runs[(mode, per_regime)] = walk_forward(
+                prices, regimes, config, mode=mode, per_regime=per_regime
+            )
+    wf = {
+        "runs": runs,
+        "efficiency": {key: wf_efficiency(run) for key, run in runs.items()},
+        "efficiency_calmar": {key: wf_efficiency(run, "calmar") for key, run in runs.items()},
+        "folds": {key: _fold_table(run) for key, run in runs.items()},
+        "n_trials_total": sum(run["n_trials_total"] for run in runs.values()),
+        "elapsed_seconds": sum(run["elapsed_seconds"] for run in runs.values()),
+    }
+    save_results(wf, "walk_forward", config)
+    return wf
+
+
+def stage_regime_performance(wf: dict, regimes: pd.Series, rf: pd.Series, config: dict) -> dict:
+    """θ por régimen contra θ único y métricas por régimen, fuera de muestra (P3, pregunta 5)."""
+    performance = regime_performance(wf["runs"], regimes, rf, config)
+    save_results(performance, "regimen_desempeno", config)
+    blocks = block_dates(config)
+    curves = {
+        "θ por régimen": wf["runs"][("rolling", True)]["oos_equity"],
+        "θ único": wf["runs"][("rolling", False)]["oos_equity"],
+    }
+    save_figure(plot_equity(curves, blocks), "regimen_theta_por_regimen_vs_unico", config)
+    save_figure(
+        plot_equity_regimes(curves["θ por régimen"], regimes), "regimen_equity_oos", config
+    )
+    return performance
+
+
+def stage_final_backtests(prices: dict, regimes: pd.Series, wf: dict, config: dict) -> dict:
+    """Backtests finales continuos con los θ del walk-forward rolling por régimen.
+
+    Cada mes fuera de muestra opera con el θ de su ventana (`walk_forward_signals`) y las
+    posiciones pasan de un mes al siguiente. Risk Parity y pesos iguales usan las mismas señales,
+    costos y rebalanceo; cada activo solo corre con C = Equity (SPEC punto 5).
+    """
+    run = wf["runs"][("rolling", True)]
+    dates = next(iter(prices.values())).index
+    signals = walk_forward_signals(prices, regimes, run, config)
+    trade_params = run["trade_params"].reindex(dates)
+    portfolios = {
+        method: run_backtest(
+            prices,
+            signals,
+            sleeve_weights(prices, signals, regimes, config, method=method),
+            trade_params,
+            config,
+        )
+        for method in ("risk_parity", "equal")
+    }
+    assets = {
+        ticker: run_backtest(
+            {ticker: prices[ticker]},
+            {name: panel[[ticker]] for name, panel in signals.items()},
+            pd.DataFrame({ticker: 1.0}, index=dates),
+            trade_params,
+            config,
+        )
+        for ticker in prices
+    }
+    return {"portfolios": portfolios, "assets": assets, "signals": signals,
+            "trade_params": trade_params, "first_oos": run["folds"][0]["test_start"]}
+
+
+def stage_report(final: dict, prices: dict, rf: pd.Series, regimes: pd.Series, config: dict) -> dict:
+    """Métricas por bloque contra buy & hold y activos individuales, exposición y break-even.
+
+    El bloque train de los backtests finales empieza en el primer mes fuera de muestra (antes no
+    hay θ), y buy & hold se mide en las mismas fechas.
+    """
+    blocks = {
+        name: (max(start, final["first_oos"]), end)
+        for name, (start, end) in active_blocks(prices, config).items()
+    }
+    ppy = config["periods_per_year"]
+    labels = {"risk_parity": "Risk Parity", "equal": "Pesos iguales"}
+    strategies = {labels[k]: r for k, r in final["portfolios"].items()} | final["assets"]
+    no_trades = pd.DataFrame(columns=["entry_date", "pnl_net"])
+    tables = {
+        name: metrics_by_block(result.equity, result.trades, blocks, rf, ppy)
+        for name, result in strategies.items()
+    }
+    tables["Buy & hold"] = pd.DataFrame.from_dict(
+        {
+            name: compute_metrics(buy_and_hold_equity(prices, config, start, end), no_trades, rf, ppy)
+            for name, (start, end) in blocks.items()
+        },
+        orient="index",
+    )
+    by_block = pd.concat(tables, names=["estrategia", "bloque"])
+
+    # Break-even de SPEC punto 8 por bloque: teórico con la mediana de k y r operados y el ATR/P de
+    # train, contra el empírico de las operaciones.
+    train_start, train_end = block_dates(config)["train"]
+    atr_over_price = pd.Series(
+        {
+            ticker: (
+                compute_indicators(df.loc[:train_end], config["base_params"], config)["atr"]
+                / df["close"].loc[:train_end]
+            ).loc[train_start:].mean()
+            for ticker, df in prices.items()
+        }
+    ).mean()
+    tp = final["trade_params"].dropna(subset=["k_stop"])
+    rp = final["portfolios"]["risk_parity"]
+    entries = pd.to_datetime(rp.trades["entry_date"])
+    breakeven = pd.DataFrame.from_dict(
+        {
+            name: breakeven_winrate(
+                rp.trades[(entries >= start) & (entries <= end)],
+                tp["k_stop"].median(),
+                tp["reward_ratio"].median(),
+                atr_over_price,
+                config,
+            )
+            for name, (start, end) in blocks.items()
+        },
+        orient="index",
+    )
+    report = {
+        "blocks": blocks,
+        "metrics_by_block": by_block,
+        "exposure": {labels[k]: exposure_metrics(r) for k, r in final["portfolios"].items()},
+        "breakeven": breakeven,
+        "returns_table": returns_table(rp.equity.loc[final["first_oos"] :]),
+    }
+    save_results({**report, "final": final}, "final_backtests", config)
+
+    start = final["first_oos"]
+    curves = {labels[k]: r.equity.loc[start:] for k, r in final["portfolios"].items()}
+    bh_end = next(iter(prices.values())).index[-1]
+    curves["Buy & hold"] = buy_and_hold_equity(prices, config, start, bh_end)
+    save_figure(plot_equity(curves, blocks), "final_equity", config)
+    save_figure(
+        plot_drawdown({name: drawdown_series(curve) for name, curve in curves.items()}),
         "final_drawdown",
         config,
     )
+    save_figure(plot_returns_table(report["returns_table"]), "final_retornos_risk_parity", config)
     save_figure(
-        plot_returns_table(returns_table(backtests["risk_parity"].equity)),
-        "final_retornos_risk_parity",
+        plot_equity({t: r.equity.loc[start:] for t, r in final["assets"].items()}, blocks),
+        "final_equity_activos",
         config,
     )
+    weekly = final["signals"]["strength"].loc[start:].resample("W").last()
+    save_figure(plot_signal_heatmap(weekly), "final_mapa_senales", config)
+    save_figure(plot_equity_regimes(rp.equity.loc[start:], regimes), "final_equity_regimen", config)
+    return report
 
 
-def stage_market_impact(result, prices: dict, config: dict) -> dict:
-    """Impacto de mercado ex post sobre las operaciones de test (P1, tarea 10).
+def stage_market_impact(result, prices: dict, block: tuple, config: dict) -> dict:
+    """Impacto de mercado ex post sobre las operaciones de un bloque (P1, tarea 10).
 
-    Se reporta en bps por llenado y como fracción del equity y del retorno de test. Si el retorno de
-    test es negativo, `impact_pct_return` sale negativo: el impacto haría la pérdida más grande.
+    En la corrida final el bloque es test; antes, validation. Se reporta en bps por llenado y como
+    fracción del equity inicial y del retorno del bloque. Si el retorno es negativo,
+    `impact_pct_return` sale negativo: el impacto haría la pérdida más grande.
     """
-    test_start, test_end = block_dates(config)["test"]
-    trades = result.trades[result.trades["entry_date"].between(test_start, test_end)]
+    start, end = block
+    trades = result.trades[result.trades["entry_date"].between(start, end)]
     detail = market_impact(trades, prices, config)
     bps = pd.concat([detail["entry_bps"], detail["exit_bps"]])
-    equity = result.equity.loc[test_start:test_end]
-    test_return = equity.iloc[-1] / equity.iloc[0] - 1
+    equity = result.equity.loc[start:end]
+    block_return = equity.iloc[-1] / equity.iloc[0] - 1
     impact_pct_equity = detail["impact_cost"].sum() / equity.iloc[0]
     summary = {
+        "block": block,
         "n_trades": len(detail),
         "mean_bps": bps.mean(),
         "median_bps": bps.median(),
@@ -397,15 +586,18 @@ def stage_market_impact(result, prices: dict, config: dict) -> dict:
         "max_participation": detail[["entry_participation", "exit_participation"]].max().max(),
         "impact_cost": detail["impact_cost"].sum(),
         "impact_pct_equity": impact_pct_equity,
-        "test_return": test_return,
-        "impact_pct_return": impact_pct_equity / test_return,
+        "block_return": block_return,
+        "impact_pct_return": impact_pct_equity / block_return if block_return else float("nan"),
+        "by_ticker_bps": detail.groupby("ticker")[["entry_bps", "exit_bps"]].mean().mean(axis=1),
     }
     impact = {"detail": detail, "summary": summary}
     save_results(impact, "impacto_mercado", config)
     return impact
 
 
-def stage_bias_audit(audit: pd.DataFrame, wf: dict, impact: dict, config: dict) -> None:
+def stage_bias_audit(
+    audit: pd.DataFrame, wf: dict, impact: dict, block_name: str, config: dict
+) -> None:
     """Escribe `results/auditoria_sesgos.md`: un renglón por sesgo con su evidencia (P1, tarea 5).
 
     Las cifras salen de la corrida; el texto de cada renglón resume la decisión que lo controla.
@@ -421,9 +613,9 @@ def stage_bias_audit(audit: pd.DataFrame, wf: dict, impact: dict, config: dict) 
             "Look-ahead",
             "La señal de t se ejecuta al Open de t+1 y ese desplazamiento solo existe en "
             "`run_backtest`. Pruebas de truncamiento en verde para indicadores y señales "
-            "(`test_signals.py`), régimen (`test_regimes.py`) y el pipeline completo "
-            "(`test_pipeline.py`); golden test 9 (t → t+1). El régimen operado es la etiqueta "
-            "filtrada (forward); Viterbi solo aparece en una figura.",
+            "(`test_signals.py`), régimen (`test_regimes.py`), pesos (`test_portfolio.py`) y el "
+            "pipeline completo (`test_pipeline.py`); golden test 9 (t → t+1). El régimen operado es "
+            "la etiqueta filtrada (forward); Viterbi solo aparece en una figura.",
         ),
         (
             "Survivorship",
@@ -435,8 +627,9 @@ def stage_bias_audit(audit: pd.DataFrame, wf: dict, impact: dict, config: dict) 
         ),
         (
             "Overfitting / data snooping",
-            f"Optuna TPE con {config['n_trials_wf']} pruebas por estudio y ventana del walk-forward, "
-            f"más {config['n_trials_diagnostic']} random y {config['n_trials_diagnostic']} TPE de "
+            f"Optuna TPE con {config['n_trials_wf']} pruebas por estudio y ventana del walk-forward "
+            f"({wf['n_trials_total']:,} configuraciones evaluadas en total), más "
+            f"{config['n_trials_diagnostic']} random y {config['n_trials_diagnostic']} TPE de "
             f"diagnóstico. Se elige el medoide del mejor {config['plateau_top_frac']:.0%} (meseta), "
             f"no el máximo. m(régimen) no entra al espacio de búsqueda. Eficiencia del "
             f"walk-forward: {efficiency}. Test se corre una sola vez con θ congelados.",
@@ -447,9 +640,10 @@ def stage_bias_audit(audit: pd.DataFrame, wf: dict, impact: dict, config: dict) 
             f"en todo llenado, incluidos SL y TP; comisión de {config['commission']:.3%} por lado y "
             f"borrow en cortos. Empate intrabarra: primero el stop. Gap más allá del TP llena en el "
             f"TP, sin mejora. Impacto de mercado no modelado; estimado ex post sobre "
-            f"{impact_summary['n_trades']} operaciones de test: {impact_summary['mean_bps']:.1f} bps "
-            f"promedio por llenado (p95 {impact_summary['p95_bps']:.1f} bps), "
-            f"{impact_summary['impact_pct_equity']:.2%} del equity inicial de test.",
+            f"{impact_summary['n_trades']} operaciones de {block_name}: "
+            f"{impact_summary['mean_bps']:.1f} bps promedio por llenado (p95 "
+            f"{impact_summary['p95_bps']:.1f} bps), {impact_summary['impact_pct_equity']:.2%} del "
+            f"equity inicial del bloque.",
         ),
         (
             "Selección de muestra / periodo",
@@ -466,21 +660,58 @@ def stage_bias_audit(audit: pd.DataFrame, wf: dict, impact: dict, config: dict) 
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def stage_metadata(config: dict, started: float) -> None:
+    """Registra la corrida: commit, si fue la final (con test) y su duración (CLAUDE.md §9)."""
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=False
+    ).stdout.strip()
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain"], capture_output=True, text=True, check=False
+    ).stdout.strip()
+    save_results(
+        {
+            "commit": commit,
+            "uncommitted_changes": bool(dirty),
+            "final_run": config["final_run"],
+            "elapsed_seconds": time.time() - started,
+            "finished": time.strftime("%Y-%m-%d %H:%M:%S"),
+        },
+        "corrida",
+        config,
+    )
+
+
 def main() -> None:
     """Corre todas las etapas en orden."""
-    prices, rf, audit = stage_load(CONFIG)
-    regimes = stage_regimes(prices, CONFIG)
-    save_results({"audit": audit, "regimes": regimes}, "datos_regimen", CONFIG)
-    stage_regime_report(prices, regimes, CONFIG)
-    stage_portfolio(prices, rf, regimes, CONFIG)
-    stage_save_base_run(stage_base_run(prices, CONFIG), CONFIG)
-    stage_diagnostic_figures(stage_diagnostics(prices, CONFIG), CONFIG)
-    wf = stage_walk_forward(prices, regimes, CONFIG)
-    stage_regime_performance(wf, regimes, rf, CONFIG)
-    backtests = stage_final_backtests(prices, regimes, wf, CONFIG)
-    stage_report(backtests, rf, CONFIG)
-    impact = stage_market_impact(backtests["risk_parity"], prices, CONFIG)
-    stage_bias_audit(audit, wf, impact, CONFIG)
+    started = time.time()
+    config = CONFIG
+    log(f"carga de datos (final_run={config['final_run']})")
+    prices, rf, audit = stage_load(config)
+    regimes = label_regimes(prices, config)
+    save_results({"audit": audit, "regimes": regimes}, "datos_regimen", config)
+    log("régimen")
+    stage_regime_report(prices, regimes, config)
+    log("portafolio (train, θ base)")
+    stage_portfolio(prices, rf, regimes, config)
+    log("corrida base (train)")
+    stage_save_base_run(stage_base_run(prices, config), config)
+    log("estudios de diagnóstico")
+    diagnostics = stage_diagnostics(prices, config)
+    log("robustez con θ* de la meseta")
+    stage_robustness(prices, diagnostics["plateau"], config)
+    wf = stage_walk_forward(prices, regimes, config)
+    log("desempeño por régimen")
+    stage_regime_performance(wf, regimes, rf, config)
+    log("backtests finales y reporte")
+    final = stage_final_backtests(prices, regimes, wf, config)
+    report = stage_report(final, prices, rf, regimes, config)
+    block_name = "test" if config["final_run"] else "validation"
+    impact = stage_market_impact(
+        final["portfolios"]["risk_parity"], prices, report["blocks"][block_name], config
+    )
+    stage_bias_audit(audit, wf, impact, block_name, config)
+    stage_metadata(config, started)
+    log(f"listo en {(time.time() - started) / 60:.1f} min")
 
 
 if __name__ == "__main__":

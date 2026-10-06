@@ -572,3 +572,32 @@ def test_surface_grid_uses_top_two_parameters(monkeypatch, config_test):
     assert len(out["grid"]) == 16
     assert out["fixed"] == random_study.best_trial.params
     assert all(p["reward_ratio"] == out["fixed"]["reward_ratio"] for p in seen)
+
+
+def test_walk_forward_signals_uses_each_fold_theta_and_is_causal(config_test):
+    """Cada mes OOS usa el θ de su fold; fuera de los meses OOS no hay señal."""
+    from src.optimize import walk_forward_signals
+    from src.signals import generate_signals
+    from tests.conftest import make_synthetic_prices
+
+    prices = make_synthetic_prices(n_assets=2, n_days=300, seed=3)
+    index = next(iter(prices.values())).index
+    regimes = pd.Series("tendencia", index=index)
+    base = config_test["base_params"]
+    fast = {**base, "sma_fast": 5, "sma_slow": 40, "rsi_window": 7}
+    folds = [
+        {"test_start": index[150], "test_end": index[199], "params_by_regime": {"tendencia": base}},
+        {"test_start": index[200], "test_end": index[249], "params_by_regime": {"tendencia": fast}},
+    ]
+    signals = walk_forward_signals(prices, regimes, {"folds": folds}, config_test)
+
+    for fold in folds:
+        start, end = fold["test_start"], fold["test_end"]
+        history = {t: d.loc[:end] for t, d in prices.items()}
+        expected = generate_signals(history, fold["params_by_regime"], regimes, config_test)
+        for name in ("state", "strength", "atr"):
+            pd.testing.assert_frame_equal(
+                signals[name].loc[start:end], expected[name].loc[start:end], check_dtype=False
+            )
+    assert (signals["state"].iloc[:150] == 0).all().all()
+    assert signals["atr"].iloc[250:].isna().all().all()

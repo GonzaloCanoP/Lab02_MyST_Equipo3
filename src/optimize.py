@@ -1008,6 +1008,49 @@ def walk_forward(
     }
 
 
+def walk_forward_signals(prices: dict, regimes: pd.Series, wf_result: dict, config: dict) -> dict:
+    """Señales del backtest final: cada mes fuera de muestra con el θ de su ventana.
+
+    Para cada fold, `generate_signals` corre con sus θ sobre los precios hasta el fin de su mes de
+    prueba (causal) y se toman solo las filas de ese mes. Fuera de los meses OOS el estado y la
+    fuerza son 0 y el ATR es NaN, así que no se abre posición. Un régimen en efectivo (θ None) no
+    se opera porque `trade_params` del walk-forward trae NaN en esas fechas.
+
+    Parameters
+    ----------
+    prices : dict[str, pd.DataFrame]
+        OHLCV completo.
+    regimes : pd.Series
+        Etiqueta filtrada y causal.
+    wf_result : dict
+        Salida de `walk_forward`.
+    config : dict
+        `CONFIG`.
+
+    Returns
+    -------
+    dict[str, pd.DataFrame]
+        "state", "strength" y "atr", como `generate_signals`, con el índice de `prices`.
+    """
+    tickers = list(prices)
+    dates = prices[tickers[0]].index
+    signals = {
+        "state": pd.DataFrame(0, index=dates, columns=tickers, dtype=int),
+        "strength": pd.DataFrame(0.0, index=dates, columns=tickers),
+        "atr": pd.DataFrame(np.nan, index=dates, columns=tickers),
+    }
+    for fold in wf_result["folds"]:
+        start, end = fold["test_start"], fold["test_end"]
+        history = {ticker: data.loc[:end] for ticker, data in prices.items()}
+        fold_signals = generate_signals(
+            history, _signal_params(fold["params_by_regime"], config), regimes, config
+        )
+        for name, panel in fold_signals.items():
+            month = panel.loc[start:end]
+            signals[name].loc[month.index] = month
+    return signals
+
+
 def wf_efficiency(wf_result: dict, metric: str = "ann_return") -> float:
     """Calcula la eficiencia walk-forward.
 
