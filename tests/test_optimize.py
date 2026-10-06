@@ -13,6 +13,7 @@ from src.optimize import (
     sensitivity,
     single_indicator_comparison,
     walk_forward,
+    wf_efficiency,
 )
 
 def test_search_space_matches_config(
@@ -1363,3 +1364,123 @@ def test_walk_forward_same_seed_is_reproducible(
             "params_by_fold"
         ]
     )
+
+def test_wf_efficiency_ann_return():
+    dates = pd.bdate_range(
+        "2020-01-01",
+        periods=3,
+    )
+
+    wf_result = {
+        "periods_per_year": 2,
+        "oos_equity": pd.Series(
+            [
+                100.0,
+                90.0,
+                110.0,
+            ],
+            index=dates,
+        ),
+        "oos_trades":
+            pd.DataFrame(),
+        "folds": [
+            {
+                "is_metrics": {
+                    "ann_return":
+                        0.20,
+                    "calmar":
+                        2.0,
+                }
+            },
+            {
+                "is_metrics": {
+                    "ann_return":
+                        0.20,
+                    "calmar":
+                        2.0,
+                }
+            },
+        ],
+    }
+
+    result = wf_efficiency(
+        wf_result
+    )
+
+    assert result == pytest.approx(
+        0.5
+    )
+
+def test_wf_efficiency_calmar():
+    dates = pd.bdate_range(
+        "2020-01-01",
+        periods=3,
+    )
+
+    wf_result = {
+        "periods_per_year": 2,
+        "oos_equity": pd.Series(
+            [
+                100.0,
+                90.0,
+                110.0,
+            ],
+            index=dates,
+        ),
+        "oos_trades":
+            pd.DataFrame(),
+        "folds": [
+            {
+                "is_metrics": {
+                    "ann_return":
+                        0.20,
+                    "calmar":
+                        2.0,
+                }
+            },
+            {
+                "is_metrics": {
+                    "ann_return":
+                        0.20,
+                    "calmar":
+                        2.0,
+                }
+            },
+        ],
+    }
+
+    result = wf_efficiency(
+        wf_result,
+        metric="calmar",
+    )
+
+    assert result == pytest.approx(
+        0.5
+    )
+
+def test_wf_efficiency_rejects_unknown_metric():
+    with pytest.raises(
+        ValueError
+    ):
+        wf_efficiency(
+            {
+                "folds": [
+                    {
+                        "is_metrics":
+                            {}
+                    }
+                ],
+                "oos_equity":
+                    pd.Series(
+                        [
+                            100.0,
+                            101.0,
+                        ]
+                    ),
+                "oos_trades":
+                    pd.DataFrame(),
+                "periods_per_year":
+                    252,
+            },
+            metric="sharpe",
+        )

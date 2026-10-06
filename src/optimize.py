@@ -2165,12 +2165,175 @@ def walk_forward(
             float(
                 elapsed_seconds
             ),
+        "periods_per_year":
+            int(
+                config[
+                    "periods_per_year"
+                ]
+            ),
     }
 
-def wf_efficiency(wf_result: dict) -> float:
-    """Desempeño fuera de muestra concatenado / promedio del desempeño dentro de muestra."""
-    raise NotImplementedError
+def wf_efficiency(
+    wf_result: dict,
+    metric: str = "ann_return",
+) -> float:
+    """Calcula la eficiencia walk-forward.
 
+    La eficiencia se define como:
+
+        desempeño OOS concatenado
+        -------------------------
+        promedio desempeño IS
+
+    Por defecto se usa retorno anualizado, como indica P2.
+    También puede calcularse con Calmar mediante
+    ``metric="calmar"``.
+
+    Parameters
+    ----------
+    wf_result : dict
+        Resultado producido por ``walk_forward``.
+    metric : str
+        ``"ann_return"`` o ``"calmar"``.
+
+    Returns
+    -------
+    float
+        Walk-forward efficiency. Devuelve NaN cuando el
+        cociente no está definido.
+    """
+    if metric not in {
+        "ann_return",
+        "calmar",
+    }:
+        raise ValueError(
+            "metric debe ser "
+            "'ann_return' o 'calmar'."
+        )
+
+    folds = wf_result.get(
+        "folds"
+    )
+
+    if not folds:
+        raise ValueError(
+            "wf_result no contiene folds."
+        )
+
+    oos_equity = wf_result.get(
+        "oos_equity"
+    )
+
+    if (
+        not isinstance(
+            oos_equity,
+            pd.Series,
+        )
+        or len(oos_equity) < 2
+    ):
+        raise ValueError(
+            "wf_result necesita una "
+            "equity OOS con al menos "
+            "dos observaciones."
+        )
+
+    if (
+        "periods_per_year"
+        not in wf_result
+    ):
+        raise ValueError(
+            "wf_result necesita "
+            "periods_per_year."
+        )
+
+    periods_per_year = int(
+        wf_result[
+            "periods_per_year"
+        ]
+    )
+
+    if periods_per_year <= 0:
+        raise ValueError(
+            "periods_per_year "
+            "debe ser positivo."
+        )
+
+    oos_trades = wf_result.get(
+        "oos_trades"
+    )
+
+    if oos_trades is None:
+        oos_trades = (
+            pd.DataFrame()
+        )
+
+    oos_metrics = compute_metrics(
+        oos_equity,
+        oos_trades,
+        rf=0.0,
+        periods_per_year=
+            periods_per_year,
+    )
+
+    oos_value = float(
+        oos_metrics[
+            metric
+        ]
+    )
+
+    is_values = []
+
+    for fold in folds:
+        is_metrics = fold.get(
+            "is_metrics",
+            {}
+        )
+
+        if metric not in is_metrics:
+            return np.nan
+
+        value = float(
+            is_metrics[
+                metric
+            ]
+        )
+
+        if not np.isfinite(
+            value
+        ):
+            return np.nan
+
+        is_values.append(
+            value
+        )
+
+    if not is_values:
+        return np.nan
+
+    average_is = float(
+        np.mean(
+            is_values
+        )
+    )
+
+    if (
+        not np.isfinite(
+            oos_value
+        )
+        or not np.isfinite(
+            average_is
+        )
+        or np.isclose(
+            average_is,
+            0.0,
+        )
+    ):
+        return np.nan
+
+    return float(
+        oos_value
+        / average_is
+    )
 
 def sensitivity(
     params_by_regime: dict,
