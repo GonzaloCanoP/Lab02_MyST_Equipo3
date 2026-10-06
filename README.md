@@ -79,6 +79,14 @@ semilla `SEED + i`. No se usa `np.random.seed` global.
   sobre train, el guardado de resultados y figuras, la estimación de impacto sobre test y la tabla de
   auditoría de sesgos generada en `results/auditoria_sesgos.md`. Las decisiones abiertas (unidades del
   ADV, ubicación de la función, dónde vive la auditoría) se confirmaron antes de implementarlas.
+- Revisión integral (2026-10-06): con asistencia de Claude Code se revisaron P1 y P2 contra los SPEC.
+  Se pasaron a retornos simples la covarianza de Risk Parity y las correlaciones (el régimen sigue en
+  log-retornos, por aditividad). En `sleeve_weights` se vectorizó el loop por fecha y se agregó un
+  caché de w^RP, con resultado idéntico al anterior. En el walk-forward, una ventana sin θ factible
+  queda en efectivo, la actividad mínima escala con el largo de la ventana y el paralelismo usa
+  procesos. Se agregaron el periodo de evaluación de sensibilidad y costos, la superficie 3D, las
+  métricas por bloque y buy & hold, y se registraron en SPEC punto 9 las calibraciones medidas con
+  train. Las decisiones (qué retornos usar, θ y periodo de la sensibilidad) las tomó el equipo.
 
 ### Juan Manuel Espinosa Cárdenas
 

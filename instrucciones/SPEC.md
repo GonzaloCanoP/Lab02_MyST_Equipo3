@@ -1,6 +1,6 @@
 # SPEC — Lab 02 · Equipo 3 · Nivel C (acciones y ETFs diarios)
 
-**Versión:** 1.2 · **Estado:** borrador previo al backtest
+**Versión:** 1.3 · **Estado:** calibrado con train; validation y test sin observar
 
 Estrategia direccional larga y corta, aplicada con las mismas reglas a 8 activos. Risk Parity asigna
 el capital por activo y fixed fractional dimensiona cada operación. Este documento se versiona ANTES
@@ -156,8 +156,8 @@ Con E[R] = p·r − (1 − p) − c = 0:
 
     p* = (1 + c) / (1 + r),     c = 2 · (0.00125 + 0.0002) / (k · ATR₀ / P)
 
-Ilustrativo con k = 2, r = 2 y ATR/P ≈ 1.7%: c ≈ 0.085 y p* ≈ 36.2%. *[Recalcular con el ATR/P medido
-en train.]*
+Con k = 2, r = 2 y el ATR/P medio medido en train (2.53%, promedio de los 8 activos; de 1.05% en GLD
+a 4.42% en AMD): c ≈ 0.057 y p* ≈ 35.2%.
 
 Las salidas por señal y por holding hacen que R deje de ser +r o −1. Por eso también se reporta, ex post
 y por bloque, p* = 1 / (1 + payoff), con el payoff = ganancia media / pérdida media neta de costos.
@@ -169,11 +169,26 @@ operaciones por mes y salidas por motivo (señal, stop, take-profit, holding má
 | Punto | Qué se mide | Criterio |
 |---|---|---|
 | ~~Lista de activos~~ | RESUELTO en v1.2 (punto 1) | Correlación entre ellos se mide en train y se reporta |
-| Actividad mínima (punto 7) | Operaciones por ventana con los valores base | Si salen muchas menos de 24, bajar a una cada tres meses (16) |
-| Redundancia SMA–MACD (punto 2) | Correlación de los votos | Si pasa de ~0.7, cambiar MACD por un indicador de volumen |
-| Break-even (punto 8) | ATR/P medio en train | Recalcular p* ilustrativo |
+| ~~Actividad mínima (punto 7)~~ | RESUELTO: 46.9 operaciones por ventana de 6 meses | Se mantiene 24 |
+| ~~Redundancia SMA–MACD (punto 2)~~ | RESUELTO: correlación −0.135 | Se mantiene MACD |
+| ~~Break-even (punto 8)~~ | RESUELTO: ATR/P medio 2.53% | p* = 35.2% |
 
 Toda calibración usa solo train y se registra abajo antes de correr validation.
+
+### Calibraciones con train (2026-10-06)
+Valores base del punto 2, θ único, régimen ignorado, Risk Parity y costos completos, sobre train
+(2018–2021):
+
+- **Actividad mínima:** 375 operaciones cerradas en 4 años, 46.9 por ventana de 6 meses; el mínimo
+  de 24 (1 por activo cada dos meses, sumando los 8) se cumple con holgura y no se cambia. El mínimo
+  escala con el largo de la ventana: 192 en los estudios de diagnóstico sobre los 4 años de train, y
+  crece con la ventana anchored.
+- **Redundancia SMA–MACD:** correlación de los votos de −0.135 con los 8 activos juntos (entre −0.191
+  y −0.100 por activo), lejos de 0.7. El histograma MACD (MACD − señal) mide la aceleración del
+  momento, no su dirección, así que no repite al cruce de SMA. Se mantiene MACD.
+- **Break-even:** ATR/P medio de 2.53%, así que c ≈ 0.057 y p* ≈ 35.2% (punto 8). Ex post, con las
+  salidas por señal y por holding, el payoff fue 1.30 y el p* empírico 43.4%, contra un win rate
+  observado de 44.3%: la estrategia base queda justo por encima del equilibrio en train.
 
 ## Registro de cambios
 | Versión | Fecha | Cambio | Justificación |
@@ -181,3 +196,4 @@ Toda calibración usa solo train y se registra abajo antes de correr validation.
 | 1.0 | 2026-10-04 | Primera versión, combinación de los cuatro specs del equipo | — (previo al backtest) |
 | 1.1 | 2026-10-04 | Compuerta y fuerza según el material de Risk Parity del curso (|Σx| ≥ 2, s = Σx/3); C_i a partir de w^target; valores base; variante anchored; purga y embargo; θ único de referencia | Alinear con los materiales del profe, previo al backtest |
 | 1.2 | 2026-10-04 | Lista de los 8 activos (acciones y ETFs) | Definida por el equipo antes de descargar datos |
+| 1.3 | 2026-10-06 | Calibraciones del punto 9 con train: actividad mínima, SMA–MACD y break-even; el mínimo de operaciones escala con el largo de la ventana | Medidas solo con train, antes de correr validation |

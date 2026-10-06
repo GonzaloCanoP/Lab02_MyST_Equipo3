@@ -87,8 +87,8 @@ Hereda todo de `instrucciones/CLAUDE.md`.
 - [ ] `python main.py` corre de punta a punta sin red en una copia limpia del repo
 
 ## Puntos abiertos
-- PENDIENTE DE CONFIRMAR con P4: `resize_on_rebalance`. Si es True, un cambio de C_i redimensiona las
-  posiciones abiertas, con su costo. Implementar como bandera en `config`.
+- ~~`resize_on_rebalance`~~ RESUELTO (SPEC_portafolio, Rebalanceo): `False`. Una posición abierta
+  conserva su tamaño; el costo del rebalanceo se estima ex post con `turnover`.
 - ~~ADV para el impacto~~ RESUELTO (2026-10-05): Q = nocional del llenado, ADV = media de 20 días del
   volumen en dólares (close · volume) y σ = desviación de 20 días de los retornos simples, ambos al
   cierre de la barra de la señal (`adv_window`). La función es `market_impact` en `src/backtest.py`.
@@ -118,29 +118,29 @@ Hereda todo de `instrucciones/CLAUDE.md`.
 
 ### Hallazgos de la corrida base (train, para la calibración de SPEC punto 9)
 Corrida previa con un drawdown provisional (P2 aún no implementa `drawdown_series`):
-- **Actividad mínima:** ~5.9 operaciones cerradas por activo cada 6 meses (380 en 4 años, 8 activos),
-  muy por debajo de 24 e incluso de 16. P2 debe revisar el criterio de SPEC punto 9 con esta cifra
-  antes de la optimización.
+- **Actividad mínima:** 380 operaciones en 4 años con pesos iguales, 47.5 por ventana de 6 meses. El
+  mínimo de 24 es del portafolio (1 por activo cada dos meses × 8 activos), así que se cumple; la
+  versión anterior de esta nota lo comparaba contra 5.9 operaciones por activo. Calibración
+  registrada en SPEC punto 9 (v1.3).
 - Contabilidad: |equity − (cash + Σ shares · close)| ≤ 1.2e-10 en la corrida real.
 - Salidas en pesos iguales: 171 stop, 98 target, 95 holding máximo, 16 señal.
 - Impacto ex post (pesos iguales, train): ~4 bps promedio por llenado; COPX domina (~27 bps,
   participación media 2.8% del ADV), el resto < 1.2 bps.
 
 ### PENDIENTE: requiere P2 (`metrics.py` y `optimize.py`)
-- [ ] `drawdown_series` y `compute_metrics`: sin ellas `stage_base_run` y `stage_report` fallan.
-- [ ] Curva de sensibilidad a costos: correr `cost_sweep` de P2 con la corrida base.
+- [x] `drawdown_series` y `compute_metrics` implementadas por P2.
+- [ ] Curva de sensibilidad a costos: correr `cost_sweep` (con `period` = train) en `main.py`.
 - [ ] Agregar la corrida base y la curva de costos a `analisis_P1.ipynb`.
-- [ ] Acordar con P2 las llaves de la salida de `walk_forward` que usan `stage_final_backtests`
-      ("params_by_regime", "trade_params") y `stage_bias_audit` ("efficiency" con llaves
-      (mode, per_regime)); `trade_params` debe traer la columna "regime".
+- [ ] `stage_final_backtests`: `walk_forward` devuelve `params_by_fold` (un θ por mes), no un solo
+      `params_by_regime`. Las señales se arman por ventana con su θ y se concatenan los meses de
+      prueba; `trade_params` ya viene concatenado con la columna "regime".
 
 ### PENDIENTE: requiere P4 (`portfolio.py`)
-- [ ] Confirmar `resize_on_rebalance` (hoy `False`; `run_backtest` lanza error si es `True`).
-- [ ] Confirmar con P4 que una entrada con C_i = 0 no abre ni consume el armado (hoy así funciona:
-      `capital > 0` es condición de entrada).
-- [ ] Verificar `run_backtest` con el panel real de `sleeve_weights` (Σ|w| ≤ 1 en todas las fechas).
-- [ ] Alinear `rebalance_frequency`, `rebalance_frequencies` y `rebalance_bands` de `CONFIG` con
-      SPEC_portafolio (f en días hábiles: 5 y {1, 5, 10, 21, 63}; δ ∈ {0.02, 0.05, 0.10, 0.20}).
+- [x] `resize_on_rebalance = False` (SPEC_portafolio, Rebalanceo).
+- [x] Una entrada con C_i = 0 no abre ni consume el armado (`capital > 0` es condición de entrada).
+- [x] Panel real de `sleeve_weights` con valores base: Σ|w| ≤ 0.98 en todas las fechas.
+- [x] `rebalance_frequency` ("M"), `rebalance_frequencies` (W/M/Q) y `rebalance_bands` alineados con
+      SPEC_portafolio v0.3.
 
 ### PENDIENTE: al final (test congelado)
 - [ ] `python main.py` de punta a punta en una copia limpia sin red.

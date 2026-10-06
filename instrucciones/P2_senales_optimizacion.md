@@ -105,9 +105,12 @@ mandan el enunciado y `SPEC.md`:
 - [ ] `single_indicator_comparison` reporta número de operaciones y Calmar de cada indicador solo contra la regla 2 de 3
 
 ## Puntos abiertos
-- PENDIENTE DE CONFIRMAR: Calmar cuando MDD = 0 con operaciones. Propuesta: marcar la prueba como
-  infactible.
-- PENDIENTE DE CONFIRMAR: correlación entre los votos de SMA y MACD en train (SPEC.md, punto 9). Medir
-  y reportar al equipo antes de congelar los indicadores.
+- ~~Calmar cuando MDD = 0~~ RESUELTO: la prueba es infactible (−inf), en el diagnóstico y en el
+  walk-forward.
+- ~~Correlación SMA–MACD~~ RESUELTO (SPEC punto 9, v1.3): −0.135 en train; se mantiene MACD.
+- RESUELTO (2026-10-06): una ventana sin θ factible no detiene el walk-forward; el régimen usa el θ
+  único y, si tampoco lo hay, queda en efectivo (`cash_regimes` en cada fold).
+- RESUELTO (2026-10-06): sensibilidad, curva de costos y pregunta 1 se evalúan con el θ* de la
+  meseta del diagnóstico TPE, sobre train (`period`), sin tocar validation ni test.
 - PENDIENTE DE CONFIRMAR con el profe: si los estudios de diagnóstico sobre todo Train pueden usar los
   300 trials de S08 o se respeta el tope de 200 del lab (se usa 200 mientras tanto).
