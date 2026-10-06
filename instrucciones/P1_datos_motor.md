@@ -89,42 +89,59 @@ Hereda todo de `instrucciones/CLAUDE.md`.
 ## Puntos abiertos
 - PENDIENTE DE CONFIRMAR con P4: `resize_on_rebalance`. Si es True, un cambio de C_i redimensiona las
   posiciones abiertas, con su costo. Implementar como bandera en `config`.
-- PENDIENTE DE CONFIRMAR: ADV para el impacto. Propuesta: media de 20 días del volumen en dólares,
-  causal.
+- ~~ADV para el impacto~~ RESUELTO (2026-10-05): Q = nocional del llenado, ADV = media de 20 días del
+  volumen en dólares (close · volume) y σ = desviación de 20 días de los retornos simples, ambos al
+  cierre de la barra de la señal (`adv_window`). La función es `market_impact` en `src/backtest.py`.
 
-## Estado y pendientes (2026-10-04)
+## Estado y pendientes (2026-10-05)
 
 ### Hecho
 - `src/data.py` completo. La auditoría de los datos reales sale limpia (0 NaN, 0 incoherencias OHLC,
   0 fechas descartadas; 2,449 días hábiles comunes).
-- `src/backtest.py`: `run_backtest` completo, con las decisiones de CLAUDE.md, sección 5.
+- `src/backtest.py`: `run_backtest` completo, con las decisiones de CLAUDE.md, sección 5, y
+  `market_impact` (modelo de raíz cuadrada ex post, P1 tarea 10).
 - `tests/test_backtest.py`: prueba 3 (contabilidad), inmutabilidad de argumentos, los 9 golden-file
-  tests y uno extra con costos completos.
-- `tests/test_pipeline.py`: truncamiento con stub local de señales causal. Compara señales, pesos y
-  equity en t: el equity en t solo depende de señales hasta t − 1, así que compararlo solo no detecta
-  una fuga de una barra (verificado con una señal con `shift(-1)` a propósito).
+  tests, uno extra con costos completos y 3 pruebas de `market_impact` (golden a mano, causalidad y
+  sin operaciones).
+- `tests/test_pipeline.py`: truncamiento con `compute_indicators` → `generate_signals` reales.
 - `notebooks/analisis_P1.ipynb`: datos, recorrido del motor sobre golden cases y contabilidad sintética.
+- `main.py`:
+  - `stage_base_run` + `stage_save_base_run` (tarea 4): valores base, θ único, régimen ignorado,
+    sobre train; 8 activos individuales y pesos iguales. Guarda `results/corrida_base.pkl` y 4
+    figuras `docs/figuras/base_*.png`.
+  - `stage_report`: métricas, `results/final_backtests.pkl` y figuras `final_equity` y
+    `final_drawdown`.
+  - `stage_market_impact`: impacto sobre las operaciones de test de Risk Parity, en bps y como % del
+    equity y del retorno de test → `results/impacto_mercado.pkl`.
+  - `stage_bias_audit` (tarea 5): escribe `results/auditoria_sesgos.md` con las cifras de la corrida.
+  - `results/datos_regimen.pkl`: auditoría de datos y etiqueta de régimen.
 
-### PENDIENTE: requiere P2 (`signals.py` y `metrics.py`)
-- [x] `tests/test_pipeline.py`: sustituir el stub local `causal_signals` por `compute_indicators` →
-      `generate_signals` reales (integrado con el commit de P2, 8191986).
-- [ ] Corrida base (tarea 4): valores base de SPEC.md, θ único, sobre train; por activo individual y
-      pesos iguales. Guardar equity, drawdown y operaciones en `results/` (usa `drawdown_series` de P2).
+### Hallazgos de la corrida base (train, para la calibración de SPEC punto 9)
+Corrida previa con un drawdown provisional (P2 aún no implementa `drawdown_series`):
+- **Actividad mínima:** ~5.9 operaciones cerradas por activo cada 6 meses (380 en 4 años, 8 activos),
+  muy por debajo de 24 e incluso de 16. P2 debe revisar el criterio de SPEC punto 9 con esta cifra
+  antes de la optimización.
+- Contabilidad: |equity − (cash + Σ shares · close)| ≤ 1.2e-10 en la corrida real.
+- Salidas en pesos iguales: 171 stop, 98 target, 95 holding máximo, 16 señal.
+- Impacto ex post (pesos iguales, train): ~4 bps promedio por llenado; COPX domina (~27 bps,
+  participación media 2.8% del ADV), el resto < 1.2 bps.
+
+### PENDIENTE: requiere P2 (`metrics.py` y `optimize.py`)
+- [ ] `drawdown_series` y `compute_metrics`: sin ellas `stage_base_run` y `stage_report` fallan.
 - [ ] Curva de sensibilidad a costos: correr `cost_sweep` de P2 con la corrida base.
 - [ ] Agregar la corrida base y la curva de costos a `analisis_P1.ipynb`.
+- [ ] Acordar con P2 las llaves de la salida de `walk_forward` que usan `stage_final_backtests`
+      ("params_by_regime", "trade_params") y `stage_bias_audit` ("efficiency" con llaves
+      (mode, per_regime)); `trade_params` debe traer la columna "regime".
 
 ### PENDIENTE: requiere P4 (`portfolio.py`)
 - [ ] Confirmar `resize_on_rebalance` (hoy `False`; `run_backtest` lanza error si es `True`).
+- [ ] Confirmar con P4 que una entrada con C_i = 0 no abre ni consume el armado (hoy así funciona:
+      `capital > 0` es condición de entrada).
 - [ ] Verificar `run_backtest` con el panel real de `sleeve_weights` (Σ|w| ≤ 1 en todas las fechas).
-
-### PENDIENTE: requiere P2 y P3 (optimización y régimen)
-- [ ] Acordar con P2 las llaves de la salida de `walk_forward` que usa `stage_final_backtests` en
-      `main.py` ("params_by_regime", "trade_params") y que `trade_params` traiga la columna "regime".
-- [ ] `main.py` de punta a punta conforme se integren los módulos; probar en una copia limpia sin red.
+- [ ] Alinear `rebalance_frequency`, `rebalance_frequencies` y `rebalance_bands` de `CONFIG` con
+      SPEC_portafolio (f en días hábiles: 5 y {1, 5, 10, 21, 63}; δ ∈ {0.02, 0.05, 0.10, 0.20}).
 
 ### PENDIENTE: al final (test congelado)
-- [ ] Auditoría de sesgos en `results/auditoria_sesgos.md` con evidencia concreta por renglón
-      (look-ahead, survivorship, overfitting, ejecución optimista, selección de periodo).
-- [ ] Impacto de mercado: modelo de raíz cuadrada sobre las operaciones de test, ADV = media de 20
-      días del volumen en dólares (causal); en bps y como % del retorno.
-- [ ] README completo y hash del commit de la corrida final.
+- [ ] `python main.py` de punta a punta en una copia limpia sin red.
+- [ ] README: hash del commit de la corrida final.

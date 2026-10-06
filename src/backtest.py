@@ -296,3 +296,62 @@ def run_backtest(
         trades=pd.DataFrame(trades, columns=TRADE_COLUMNS),
         costs=pd.DataFrame(cost_hist, index=dates, columns=["commission", "slippage", "borrow"]),
     )
+
+
+IMPACT_COLUMNS = [
+    "trade_id", "ticker", "entry_date", "entry_notional", "entry_participation", "entry_bps",
+    "exit_date", "exit_notional", "exit_participation", "exit_bps", "impact_cost",
+]
+
+
+def market_impact(trades: pd.DataFrame, prices: dict, config: dict) -> pd.DataFrame:
+    """Impacto de mercado estimado ex post con el modelo de raíz cuadrada; no entra al motor.
+
+    P1, tarea 10 (SPEC punto 6: el impacto se declara como limitación con su magnitud). Por cada
+    llenado de una operación cerrada:
+
+        impacto = σ_diaria · sqrt(Q / ADV)
+
+    con Q el nocional del llenado, ADV la media del volumen en dólares (close · volume) y σ_diaria la
+    desviación estándar de los retornos simples, ambas en una ventana de `config["adv_window"]` días
+    al cierre de la barra de la señal (la anterior al llenado). Así la estimación es causal: un
+    operador solo conoce esos valores al decidir la orden.
+
+    Parameters
+    ----------
+    trades : pd.DataFrame
+        `BacktestResult.trades`.
+    prices : dict[str, pd.DataFrame]
+        OHLCV por ticker con el mismo índice usado en el backtest.
+    config : dict
+        Usa `adv_window`.
+
+    Returns
+    -------
+    pd.DataFrame
+        Una fila por operación: nocional, participación (Q / ADV) e impacto en bps de la entrada y de
+        la salida, e `impact_cost`, el costo total en USD de ambos llenados. NaN si la ventana aún no
+        tiene datos suficientes.
+    """
+    window = config["adv_window"]
+    rows = []
+    for ticker, group in trades.groupby("ticker", sort=False):
+        df = prices[ticker]
+        sigma = df["close"].pct_change(fill_method=None).rolling(window, min_periods=window).std()
+        adv = (df["close"] * df["volume"]).rolling(window, min_periods=window).mean()
+        legs = {}
+        for leg in ("entry", "exit"):
+            signal_pos = df.index.get_indexer(group[f"{leg}_date"]) - 1
+            notional = group["shares"].to_numpy() * group[f"{leg}_price"].to_numpy()
+            participation = notional / adv.to_numpy()[signal_pos]
+            legs[f"{leg}_date"] = group[f"{leg}_date"].to_numpy()
+            legs[f"{leg}_notional"] = notional
+            legs[f"{leg}_participation"] = participation
+            legs[f"{leg}_bps"] = sigma.to_numpy()[signal_pos] * np.sqrt(participation) * 1e4
+        legs["impact_cost"] = (
+            legs["entry_notional"] * legs["entry_bps"] + legs["exit_notional"] * legs["exit_bps"]
+        ) / 1e4
+        rows.append(pd.DataFrame({"trade_id": group["trade_id"].to_numpy(), "ticker": ticker, **legs}))
+    if not rows:
+        return pd.DataFrame(columns=IMPACT_COLUMNS)
+    return pd.concat(rows, ignore_index=True)[IMPACT_COLUMNS].sort_values("trade_id", ignore_index=True)

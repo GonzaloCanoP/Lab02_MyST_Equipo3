@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.backtest import run_backtest
+from src.backtest import TRADE_COLUMNS, market_impact, run_backtest
 
 BASE_PARAMS = {"k_stop": 2.0, "reward_ratio": 2.0, "max_holding": 20, "risk_per_trade": 0.01}
 
@@ -270,3 +270,67 @@ def test_golden_9_signal_at_t_executes_at_t_plus_1(config_test):
     assert result.equity.iloc[-1] == pytest.approx(100_500.0)
     assert result.fills["date"].tolist() == [result.equity.index[2]]
     assert result.fills["price"].tolist() == [105.0]
+
+
+# ---------------------------------------------------------------------------- impacto de mercado
+
+
+def impact_inputs(config):
+    """Un activo de 5 barras con ADV y σ de 2 días, y una operación cerrada escrita a mano.
+
+    Cierres 100, 110, 99, 99, 99 → retornos simples +0.10, −0.10, 0, 0. Volumen en dólares
+    (close · volume) de 2, 6, 4, 4 y 4 millones. La operación entra en la barra 3 (señal en la 2) con
+    100 acciones a 100 y sale en la barra 4 (señal en la 3) a 125.
+    """
+    index = pd.bdate_range("2020-01-01", periods=5, name="date")
+    close = np.array([100.0, 110.0, 99.0, 99.0, 99.0])
+    dollar_volume = np.array([2e6, 2e6, 6e6, 4e6, 4e6])
+    prices = {
+        "X": pd.DataFrame(
+            {"open": close, "high": close, "low": close, "close": close,
+             "volume": dollar_volume / close},
+            index=index,
+        )
+    }
+    trade = dict.fromkeys(TRADE_COLUMNS, 0.0)
+    trade.update(
+        trade_id=0, ticker="X", side="long", entry_date=index[3], entry_price=100.0,
+        exit_date=index[4], exit_price=125.0, shares=100.0, exit_reason="signal",
+    )
+    cfg = copy.deepcopy(config)
+    cfg["adv_window"] = 2
+    return prices, pd.DataFrame([trade], columns=TRADE_COLUMNS), cfg
+
+
+def test_market_impact_golden(config_test):
+    """Modelo de raíz cuadrada con ADV y σ al cierre de la barra de la señal (P1, tarea 10).
+
+    Entrada (señal en la barra 2): σ = std(+0.10, −0.10) = √0.02 = 0.141421; ADV = (2 + 6)/2 = 4 M;
+    nocional 10,000 → participación 0.0025, √ = 0.05 → 0.141421 · 0.05 = 70.7107 bps.
+    Salida (señal en la barra 3): σ = std(−0.10, 0) = √0.005 = 0.070711; ADV = (6 + 4)/2 = 5 M;
+    nocional 12,500 → participación 0.0025 → 35.3553 bps.
+    Costo = 10,000 · 0.00707107 + 12,500 · 0.00353553 = 70.7107 + 44.1942 = 114.9049.
+    """
+    prices, trades, cfg = impact_inputs(config_test)
+    impact = market_impact(trades, prices, cfg)
+    row = impact.iloc[0]
+    assert row["entry_participation"] == pytest.approx(0.0025)
+    assert row["entry_bps"] == pytest.approx(70.7107, abs=1e-4)
+    assert row["exit_participation"] == pytest.approx(0.0025)
+    assert row["exit_bps"] == pytest.approx(35.3553, abs=1e-4)
+    assert row["impact_cost"] == pytest.approx(114.9049, abs=1e-4)
+
+
+def test_market_impact_uses_only_data_up_to_signal_bar(config_test):
+    """Cambiar la barra de entrada no altera el impacto de la entrada: ADV y σ son de la señal."""
+    prices, trades, cfg = impact_inputs(config_test)
+    before = market_impact(trades, prices, cfg)
+    shocked = {"X": prices["X"].copy()}
+    shocked["X"].iloc[3] = shocked["X"].iloc[3] * 3
+    after = market_impact(trades, shocked, cfg)
+    assert after["entry_bps"].iloc[0] == pytest.approx(before["entry_bps"].iloc[0])
+
+
+def test_market_impact_without_trades_is_empty(config_test):
+    prices, trades, cfg = impact_inputs(config_test)
+    assert market_impact(trades.iloc[:0], prices, cfg).empty

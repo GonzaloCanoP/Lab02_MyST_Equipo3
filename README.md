@@ -71,6 +71,14 @@ semilla `SEED + i`. No se usa `np.random.seed` global.
 - P0: con asistencia de Claude Code se revisó la estructura del repositorio, se fijaron las
   dependencias, se escribieron los stubs de `src/` con sus firmas, `main.py` con `CONFIG`,
   `tests/conftest.py` y este README. También se implementó `download_prices` y se descargaron los datos.
+- P1, motor y auditoría: con asistencia de Claude Code se implementaron `run_backtest`, sus pruebas
+  (contabilidad, inmutabilidad, 9 golden-file tests calculados a mano y truncamiento del pipeline) y
+  `notebooks/analisis_P1.ipynb`.
+- P1, cierre: con asistencia de Claude Code se agregaron `market_impact` (modelo de raíz cuadrada ex
+  post, con prueba golden calculada a mano y prueba de causalidad) y, en `main.py`, la corrida base
+  sobre train, el guardado de resultados y figuras, la estimación de impacto sobre test y la tabla de
+  auditoría de sesgos generada en `results/auditoria_sesgos.md`. Las decisiones abiertas (unidades del
+  ADV, ubicación de la función, dónde vive la auditoría) se confirmaron antes de implementarlas.
 
 ### Juan Manuel Espinosa Cárdenas
 
