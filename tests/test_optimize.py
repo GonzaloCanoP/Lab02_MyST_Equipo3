@@ -1,3 +1,4 @@
+import pandas as pd
 import numpy as np
 import optuna
 import pytest
@@ -6,6 +7,7 @@ from src.optimize import (
     search_space,
     select_plateau,
     sensitivity,
+    single_indicator_comparison,
 )
 
 
@@ -262,3 +264,130 @@ def test_sensitivity_rejects_invalid_pct(
             config_test,
             pct=0.0,
         )
+
+def test_single_indicator_comparison(
+    monkeypatch,
+    config_test,
+):
+    class FakeResult:
+        def __init__(
+            self,
+            n_trades,
+        ):
+            self.trades = (
+                pd.DataFrame(
+                    {
+                        "pnl_net":
+                            [1.0]
+                            * n_trades
+                    }
+                )
+            )
+
+    def fake_evaluate_params(
+        params_by_regime,
+        prices,
+        regimes,
+        config,
+        entry_mask=None,
+    ):
+        return (
+            FakeResult(40),
+            {
+                "calmar": 1.5
+            },
+        )
+
+    scores = {
+        "sma": (30, 0.8),
+        "macd": (25, 0.6),
+        "rsi": (20, 0.4),
+    }
+
+    def fake_single_indicator(
+        indicator,
+        params_by_regime,
+        prices,
+        regimes,
+        config,
+    ):
+        n_trades, calmar = (
+            scores[indicator]
+        )
+
+        return (
+            FakeResult(n_trades),
+            {
+                "calmar": calmar
+            },
+        )
+
+    monkeypatch.setattr(
+        "src.optimize._evaluate_params",
+        fake_evaluate_params,
+    )
+
+    monkeypatch.setattr(
+        "src.optimize._evaluate_single_indicator",
+        fake_single_indicator,
+    )
+
+    result = (
+        single_indicator_comparison(
+            {
+                "tendencia":
+                    config_test[
+                        "base_params"
+                    ]
+            },
+            None,
+            None,
+            config_test,
+        )
+    )
+
+    assert set(
+        result.index
+    ) == {
+        "2_de_3",
+        "sma",
+        "macd",
+        "rsi",
+    }
+
+    assert (
+        result.loc[
+            "2_de_3",
+            "n_trades",
+        ]
+        == 40
+    )
+
+    assert result.loc[
+        "2_de_3",
+        "calmar",
+    ] == pytest.approx(
+        1.5
+    )
+
+    assert (
+        result.loc[
+            "sma",
+            "n_trades",
+        ]
+        == 30
+    )
+
+    assert result.loc[
+        "macd",
+        "calmar",
+    ] == pytest.approx(
+        0.6
+    )
+
+    assert result.loc[
+        "rsi",
+        "calmar",
+    ] == pytest.approx(
+        0.4
+    )

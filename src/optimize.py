@@ -12,7 +12,11 @@ import pandas as pd
 from src.backtest import run_backtest
 from src.metrics import compute_metrics
 from src.portfolio import sleeve_weights
-from src.signals import generate_signals
+from src.signals import (
+    compute_indicators,
+    generate_signals,
+    indicator_votes,
+)
 
 _PARAMETER_KINDS = {
     "sma_fast": "int",
@@ -118,6 +122,208 @@ def _evaluate_params(
         trade_params,
         config,
         entry_mask=entry_mask,
+    )
+
+    metrics = compute_metrics(
+        result.equity,
+        result.trades,
+        rf=0.0,
+        periods_per_year=config[
+            "periods_per_year"
+        ],
+    )
+
+    return result, metrics
+
+def _single_indicator_signals(
+    prices: dict,
+    params_by_regime: dict,
+    regimes: pd.Series,
+    config: dict,
+    indicator: str,
+) -> dict[str, pd.DataFrame]:
+    """Genera señales usando únicamente SMA, MACD o RSI.
+
+    Se utiliza para comparar cada indicador por separado contra
+    la regla principal de confirmación 2 de 3 de P2.
+    """
+    vote_columns = {
+        "sma": "v_sma",
+        "macd": "v_macd",
+        "rsi": "v_rsi",
+    }
+
+    if indicator not in vote_columns:
+        raise ValueError(
+            "indicator debe ser 'sma', 'macd' o 'rsi'."
+        )
+
+    tickers = list(prices)
+
+    if not tickers:
+        raise ValueError(
+            "prices no puede estar vacío."
+        )
+
+    index = prices[
+        tickers[0]
+    ].index
+
+    labels = regimes.reindex(index)
+
+    state = pd.DataFrame(
+        0,
+        index=index,
+        columns=tickers,
+        dtype=int,
+    )
+
+    strength = pd.DataFrame(
+        0.0,
+        index=index,
+        columns=tickers,
+    )
+
+    atr = pd.DataFrame(
+        np.nan,
+        index=index,
+        columns=tickers,
+    )
+
+    used_regimes = set(
+        labels.dropna().unique()
+    )
+
+    missing = (
+        used_regimes
+        - set(params_by_regime)
+    )
+
+    if missing:
+        raise ValueError(
+            "Faltan parámetros para "
+            f"los regímenes: {sorted(missing)}"
+        )
+
+    vote_column = vote_columns[
+        indicator
+    ]
+
+    for ticker in tickers:
+        price_data = prices[
+            ticker
+        ]
+
+        for regime_name in used_regimes:
+            params = params_by_regime[
+                regime_name
+            ]
+
+            indicators = (
+                compute_indicators(
+                    price_data,
+                    params,
+                    config,
+                )
+            )
+
+            votes = indicator_votes(
+                indicators,
+                params,
+            )
+
+            vote = votes[
+                vote_column
+            ].astype(int)
+
+            mask = (
+                labels
+                == regime_name
+            )
+
+            state.loc[
+                mask,
+                ticker,
+            ] = vote.loc[
+                mask
+            ]
+
+            strength.loc[
+                mask,
+                ticker,
+            ] = vote.loc[
+                mask
+            ].astype(float)
+
+            atr.loc[
+                mask,
+                ticker,
+            ] = indicators.loc[
+                mask,
+                "atr",
+            ]
+
+    return {
+        "state": state,
+        "strength": strength,
+        "atr": atr,
+    }
+
+def _evaluate_single_indicator(
+    indicator: str,
+    params_by_regime: dict,
+    prices: dict,
+    regimes: pd.Series,
+    config: dict,
+) -> tuple:
+    """Ejecuta el backtest usando únicamente un indicador."""
+    tickers = list(prices)
+
+    if not tickers:
+        raise ValueError(
+            "prices no puede estar vacío."
+        )
+
+    index = prices[
+        tickers[0]
+    ].index
+
+    labels = regimes.reindex(
+        index
+    )
+
+    signals = (
+        _single_indicator_signals(
+            prices,
+            params_by_regime,
+            labels,
+            config,
+            indicator,
+        )
+    )
+
+    sleeve = sleeve_weights(
+        prices,
+        signals,
+        labels,
+        config,
+        method="risk_parity",
+    )
+
+    trade_params = (
+        _trade_params_panel(
+            labels,
+            params_by_regime,
+            index,
+        )
+    )
+
+    result = run_backtest(
+        prices,
+        signals,
+        sleeve,
+        trade_params,
+        config,
     )
 
     metrics = compute_metrics(
@@ -512,5 +718,72 @@ def single_indicator_comparison(
     regimes: pd.Series,
     config: dict,
 ) -> pd.DataFrame:
-    """Operaciones y Calmar de cada indicador solo contra la regla 2 de 3 (pregunta 1)."""
-    raise NotImplementedError
+    """Compara indicadores individuales contra la regla 2 de 3.
+
+    Reporta el número de operaciones cerradas y el Calmar para
+    SMA, MACD, RSI y la estrategia principal de confirmación
+    2 de 3.
+
+    Returns
+    -------
+    pd.DataFrame
+        Estrategia, número de operaciones y Calmar.
+    """
+    rows = []
+
+    result_2of3, metrics_2of3 = (
+        _evaluate_params(
+            params_by_regime,
+            prices,
+            regimes,
+            config,
+        )
+    )
+
+    rows.append(
+        {
+            "strategy": "2_de_3",
+            "n_trades": int(
+                len(
+                    result_2of3.trades
+                )
+            ),
+            "calmar": metrics_2of3[
+                "calmar"
+            ],
+        }
+    )
+
+    for indicator in (
+        "sma",
+        "macd",
+        "rsi",
+    ):
+        result, metrics = (
+            _evaluate_single_indicator(
+                indicator,
+                params_by_regime,
+                prices,
+                regimes,
+                config,
+            )
+        )
+
+        rows.append(
+            {
+                "strategy":
+                    indicator,
+                "n_trades": int(
+                    len(
+                        result.trades
+                    )
+                ),
+                "calmar":
+                    metrics["calmar"],
+            }
+        )
+
+    return (
+        pd.DataFrame(rows)
+        .set_index("strategy")
+    )
