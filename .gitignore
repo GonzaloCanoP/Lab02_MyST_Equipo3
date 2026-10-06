@@ -18,4 +18,4 @@ __pycache__/
 .idea/
 
 # Claude Code: se versiona .claude/CLAUDE.md; la configuración local es personal
-.claude/settings.local.json
+.claude/
