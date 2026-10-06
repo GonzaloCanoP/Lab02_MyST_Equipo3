@@ -12,16 +12,29 @@ import pandas as pd
 
 from src.backtest import market_impact, run_backtest
 from src.data import audit_prices, block_dates, download_prices, load_prices, load_risk_free
-from src.metrics import compute_metrics, drawdown_series
+from src.metrics import compute_metrics, drawdown_series, returns_table
 from src.optimize import diagnostic_study, select_plateau, walk_forward, wf_efficiency
-from src.plots import plot_drawdown, plot_equity, plot_rebalance_sweep, plot_risk_contributions
+from src.plots import (
+    plot_corr_by_regime,
+    plot_drawdown,
+    plot_equity,
+    plot_equity_regimes,
+    plot_optimization_history,
+    plot_param_importance,
+    plot_rebalance_sweep,
+    plot_regime_features,
+    plot_regime_timeline,
+    plot_returns_table,
+    plot_risk_contributions,
+    plot_slices,
+)
 from src.portfolio import (
        portfolio_results,
        risk_contribution_plot_frame,
        sleeve_weights,
        sweep_plot_frame,
    )
-from src.regimes import REGIME_NAMES, label_regimes
+from src.regimes import REGIME_NAMES, label_regimes, regime_performance, regime_results
 from src.signals import generate_signals
 
 SEED = 42
@@ -160,6 +173,59 @@ def stage_load(config: dict) -> tuple[dict, object, object]:
 def stage_regimes(prices: dict, config: dict):
     """Etiqueta de régimen filtrada y causal para todas las fechas (P3)."""
     return label_regimes(prices, config)
+
+
+def stage_regime_report(prices: dict, regimes, config: dict) -> dict:
+    """Resultados y figuras de régimen (P3): comparación de métodos, validación y tarea 4.
+
+    La tabla comparativa usa train y validation; la validación de la etiqueta operable reporta
+    además su % de tiempo en test (estabilidad fuera de muestra, P3 tarea 10).
+    """
+    results = regime_results(prices, regimes, config)
+    save_results(results, "regimen", config)
+    train_start, train_end = block_dates(config)["train"]
+    save_figure(
+        plot_regime_timeline(
+            results["market_index"], results["hmm_filtered"], results["hmm_viterbi"]
+        ),
+        "regimen_filtrada_vs_viterbi",
+        config,
+    )
+    save_figure(
+        plot_regime_features(
+            results["features"].loc[train_start:train_end], regimes.loc[train_start:train_end]
+        ),
+        "regimen_variables_train",
+        config,
+    )
+    save_figure(plot_corr_by_regime(results["corr_by_regime"]), "regimen_correlacion_train", config)
+    return results
+
+
+def stage_diagnostic_figures(diagnostics: dict, config: dict) -> None:
+    """Figuras del estudio TPE de diagnóstico (P2): historia, importancia y slice plots."""
+    study = diagnostics["studies"]["tpe"]
+    save_figure(plot_optimization_history(study), "diagnostico_historia_tpe", config)
+    save_figure(
+        plot_param_importance(study, config["seed"]), "diagnostico_importancia_tpe", config
+    )
+    save_figure(plot_slices(study), "diagnostico_slices_tpe", config)
+
+
+def stage_regime_performance(wf: dict, regimes, rf, config: dict) -> dict:
+    """θ por régimen contra θ único y métricas por régimen, fuera de muestra (P3, pregunta 5)."""
+    performance = regime_performance(wf["runs"], regimes, rf, config)
+    save_results(performance, "regimen_desempeno", config)
+    blocks = block_dates(config)
+    curves = {
+        "θ por régimen": wf["runs"][("rolling", True)]["oos_equity"],
+        "θ único": wf["runs"][("rolling", False)]["oos_equity"],
+    }
+    save_figure(plot_equity(curves, blocks), "regimen_theta_por_regimen_vs_unico", config)
+    save_figure(
+        plot_equity_regimes(curves["θ por régimen"], regimes), "regimen_equity_oos", config
+    )
+    return performance
 
 
 def stage_base_run(prices: dict, config: dict) -> dict:
@@ -303,6 +369,11 @@ def stage_report(backtests: dict, rf, config: dict) -> None:
         "final_drawdown",
         config,
     )
+    save_figure(
+        plot_returns_table(returns_table(backtests["risk_parity"].equity)),
+        "final_retornos_risk_parity",
+        config,
+    )
 
 
 def stage_market_impact(result, prices: dict, config: dict) -> dict:
@@ -400,10 +471,12 @@ def main() -> None:
     prices, rf, audit = stage_load(CONFIG)
     regimes = stage_regimes(prices, CONFIG)
     save_results({"audit": audit, "regimes": regimes}, "datos_regimen", CONFIG)
+    stage_regime_report(prices, regimes, CONFIG)
     stage_portfolio(prices, rf, regimes, CONFIG)
     stage_save_base_run(stage_base_run(prices, CONFIG), CONFIG)
-    stage_diagnostics(prices, CONFIG)
+    stage_diagnostic_figures(stage_diagnostics(prices, CONFIG), CONFIG)
     wf = stage_walk_forward(prices, regimes, CONFIG)
+    stage_regime_performance(wf, regimes, rf, CONFIG)
     backtests = stage_final_backtests(prices, regimes, wf, CONFIG)
     stage_report(backtests, rf, CONFIG)
     impact = stage_market_impact(backtests["risk_parity"], prices, CONFIG)
