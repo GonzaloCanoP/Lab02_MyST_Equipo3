@@ -299,13 +299,29 @@ def _diagnostic_score(params: dict, setup: dict, config: dict) -> tuple[float, i
 def diagnostic_study(
     prices: dict, config: dict, sampler: str, n_trials: int, seed: int
 ) -> optuna.Study:
-    """Corre el diagnóstico de Optuna sobre Train con un theta único.
+    """Estudio de diagnóstico sobre todo train con θ único (P2, tareas 13 y 14; S08).
 
-    Se puede usar RandomSampler o TPESampler. Cada prueba ejecuta
-    señales -> Risk Parity -> backtest con costos -> Calmar.
+    Cada prueba corre señales → Risk Parity → backtest con costos → Calmar; las que no alcanzan
+    la actividad mínima o no tienen Calmar finito valen −inf (`_diagnostic_score`).
 
-    Las configuraciones que no alcanzan la actividad mínima o cuyo
-    Calmar no es finito reciben -inf.
+    Parameters
+    ----------
+    prices : dict[str, pd.DataFrame]
+        OHLCV completo; se recorta al fin de train.
+    config : dict
+        `CONFIG`.
+    sampler : str
+        "random" (fase 1) o "tpe" (fase 2).
+    n_trials : int
+        Número de pruebas (200 en `CONFIG`, tope del lab).
+    seed : int
+        Semilla del sampler.
+
+    Returns
+    -------
+    optuna.Study
+        Con user_attrs: sampler, seed, pruebas pedidas, evaluadas y factibles, tiempo, fechas de
+        train, embargo y actividad mínima.
     """
     sampler_name = sampler.lower()
 
@@ -521,15 +537,32 @@ def _candidate_params_by_regime(candidate: dict, regime: str | None, config: dic
 def optimize_regime(
     prices: dict, regimes: pd.Series, regime: str | None, window: tuple, config: dict, seed: int
 ) -> dict:
-    """Optimiza theta dentro de una ventana de entrenamiento.
+    """Estudio TPE de θ en una ventana de entrenamiento (SPEC punto 7).
 
-    Con ``regime=None`` se obtiene un theta único compartido por
-    todos los regímenes. Para un régimen concreto se aplica la
-    actividad mínima prorrateada definida en el SPEC.
+    Con `regime=None` se busca un θ único para todos los regímenes. Con un régimen, solo se abren
+    posiciones en sus días y la actividad mínima se prorratea (`_minimum_trades`). Si el régimen
+    ocupa menos de `min_regime_days` días, no se optimiza y el fold usa el θ único.
 
-    Si el régimen tiene menos de ``min_regime_days`` observaciones,
-    no se optimiza y se indica que debe usarse el theta único de
-    la ventana.
+    Parameters
+    ----------
+    prices : dict[str, pd.DataFrame]
+        OHLCV completo; se recorta al fin de la ventana (purga).
+    regimes : pd.Series
+        Etiqueta filtrada y causal.
+    regime : str or None
+        Régimen a optimizar, o None para θ único.
+    window : tuple
+        (inicio, fin) de entrenamiento; los últimos `embargo_days` días no abren (embargo).
+    config : dict
+        `CONFIG`: rangos, `n_trials_wf`, `plateau_top_frac`, actividad mínima y embargo.
+    seed : int
+        Semilla del TPESampler (`SEED + i` en la ventana i).
+
+    Returns
+    -------
+    dict
+        params (medoide de la meseta, o None), study, feasible, fallback_to_single, días de la
+        ventana y del régimen, minimum_trades, métricas IS del θ elegido y la ventana.
     """
     if not prices:
         raise ValueError("prices no puede estar vacío.")
@@ -882,11 +915,31 @@ def _run_walk_forward_fold(
 def walk_forward(
     prices: dict, regimes: pd.Series, config: dict, mode: str = "rolling", per_regime: bool = True
 ) -> dict:
-    """Ejecuta walk-forward rolling o anchored.
+    """Walk-forward de 6 meses de entrenamiento, 1 de prueba y paso mensual (SPEC punto 1).
 
-    Cada fold optimiza únicamente con Train y evalúa el mes
-    siguiente fuera de muestra. Las ventanas pueden usar parámetros
-    específicos por régimen o un theta único compartido.
+    Cada ventana optimiza solo con sus datos de entrenamiento y evalúa el mes siguiente fuera de
+    muestra; las ventanas corren en paralelo (procesos) con semilla `SEED + i`. La equity OOS se
+    encadena: cada mes arranca con el equity final del anterior.
+
+    Parameters
+    ----------
+    prices : dict[str, pd.DataFrame]
+        OHLCV completo.
+    regimes : pd.Series
+        Etiqueta filtrada y causal.
+    config : dict
+        `CONFIG`.
+    mode : str
+        "rolling" (ventana fija de `wf_train_months`) o "anchored" (inicio fijo, ventana creciente).
+    per_regime : bool
+        True: un θ por régimen en cada ventana; False: θ único.
+
+    Returns
+    -------
+    dict
+        folds (detalle por ventana), params_by_fold, trade_params (panel OOS concatenado, con la
+        columna "regime"), oos_equity, oos_trades, n_folds, n_trials_total, elapsed_seconds y
+        periods_per_year.
     """
     if mode not in {"rolling", "anchored"}:
         raise ValueError("mode debe ser 'rolling' o 'anchored'.")

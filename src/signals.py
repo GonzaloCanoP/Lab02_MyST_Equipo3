@@ -9,12 +9,28 @@ import pandas as pd
 
 
 def _wilder_average(series: pd.Series, window: int) -> pd.Series:
-    """Promedio suavizado de Wilder usando una EWM causal."""
+    """Media de Wilder: EWM causal con α = 1/n (P2, "Cómo encaja"); NaN hasta tener n datos."""
     return series.ewm(alpha=1 / window, adjust=False, min_periods=window).mean()
 
 
 def compute_indicators(ohlcv: pd.DataFrame, params: dict, config: dict) -> pd.DataFrame:
-    """Calcula SMA, MACD, RSI de Wilder y ATR de Wilder."""
+    """Indicadores de un activo con información hasta el cierre de cada barra (SPEC punto 2).
+
+    Parameters
+    ----------
+    ohlcv : pd.DataFrame
+        open, high, low, close, volume de un activo.
+    params : dict
+        θ: `sma_fast`, `sma_slow` y `rsi_window` (los demás se ignoran aquí).
+    config : dict
+        MACD fijo (`macd_fast`, `macd_slow`, `macd_signal`) y `atr_window`.
+
+    Returns
+    -------
+    pd.DataFrame
+        sma_fast, sma_slow, macd_hist (MACD − señal), rsi y atr (Wilder); NaN mientras no hay
+        observaciones suficientes.
+    """
     close = ohlcv["close"]
     high = ohlcv["high"]
     low = ohlcv["low"]
@@ -57,7 +73,23 @@ def compute_indicators(ohlcv: pd.DataFrame, params: dict, config: dict) -> pd.Da
 
 
 def indicator_votes(indicators: pd.DataFrame, params: dict) -> pd.DataFrame:
-    """Convierte SMA, MACD y RSI en votos -1, 0 o +1."""
+    """Votos x_j ∈ {−1, 0, +1} de los tres indicadores (SPEC punto 2).
+
+    x_sma = sgn(SMA_f − SMA_s); x_macd = sgn(MACD − señal); x_rsi = +1 si 50 < RSI < hi,
+    −1 si lo < RSI ≤ 50 y 0 en otro caso. Un indicador sin datos suficientes vota 0.
+
+    Parameters
+    ----------
+    indicators : pd.DataFrame
+        Salida de `compute_indicators`.
+    params : dict
+        θ: usa `rsi_lo` y `rsi_hi`.
+
+    Returns
+    -------
+    pd.DataFrame
+        v_sma, v_macd y v_rsi.
+    """
     index = indicators.index
     sma_difference = indicators["sma_fast"] - indicators["sma_slow"]
     v_sma = np.sign(sma_difference).fillna(0).astype(int)
@@ -73,7 +105,20 @@ def indicator_votes(indicators: pd.DataFrame, params: dict) -> pd.DataFrame:
 
 
 def confirm_signal(votes: pd.DataFrame, min_agree: int = 2) -> pd.Series:
-    """Estado = signo de la suma si hay confirmación suficiente."""
+    """Compuerta 2 de 3 (SPEC punto 3): Estado_t = sgn(Σx) si |Σx| ≥ `min_agree`, si no 0.
+
+    Parameters
+    ----------
+    votes : pd.DataFrame
+        Salida de `indicator_votes`.
+    min_agree : int
+        Umbral de |Σx| (SPEC: 2).
+
+    Returns
+    -------
+    pd.Series
+        Estado ∈ {−1, 0, +1} por fecha.
+    """
     vote_sum = votes[["v_sma", "v_macd", "v_rsi"]].sum(axis=1)
     state = pd.Series(0, index=votes.index, dtype=int, name="state")
     confirmed = vote_sum.abs() >= min_agree
@@ -83,7 +128,20 @@ def confirm_signal(votes: pd.DataFrame, min_agree: int = 2) -> pd.Series:
 
 
 def signal_strength(votes: pd.DataFrame, min_agree: int = 2) -> pd.Series:
-    """Fuerza = suma de votos / 3 si se cumple la compuerta."""
+    """Fuerza de la señal (SPEC punto 3): s_t = Σx / 3 si |Σx| ≥ `min_agree`, si no 0.
+
+    Parameters
+    ----------
+    votes : pd.DataFrame
+        Salida de `indicator_votes`.
+    min_agree : int
+        Umbral de |Σx| (SPEC: 2).
+
+    Returns
+    -------
+    pd.Series
+        s ∈ {−1, −2/3, 0, 2/3, 1}; escala la asignación del portafolio (SPEC punto 5).
+    """
     vote_sum = votes[["v_sma", "v_macd", "v_rsi"]].sum(axis=1)
     strength = pd.Series(0.0, index=votes.index, name="strength")
     confirmed = vote_sum.abs() >= min_agree
@@ -95,7 +153,28 @@ def signal_strength(votes: pd.DataFrame, min_agree: int = 2) -> pd.Series:
 def generate_signals(
     prices: dict, params_by_regime: dict[str, dict], regimes: pd.Series, config: dict
 ) -> dict[str, pd.DataFrame]:
-    """Genera estado, fuerza y ATR para todos los activos."""
+    """Paneles de estado, fuerza y ATR de los activos con el θ del régimen vigente (SPEC 2-3).
+
+    Los indicadores de cada θ se calculan sobre toda la historia (causales) y en cada fecha se
+    toma el valor del θ de su régimen. Sin etiqueta de régimen (NaN, como en el calentamiento),
+    el estado y la fuerza son 0 y el ATR es NaN, así que no se abre posición.
+
+    Parameters
+    ----------
+    prices : dict[str, pd.DataFrame]
+        OHLCV por ticker con índice común.
+    params_by_regime : dict[str, dict]
+        θ por régimen; para un θ único, el mismo dict en las tres llaves.
+    regimes : pd.Series
+        Etiqueta filtrada y causal.
+    config : dict
+        `CONFIG` (MACD, ATR y `min_agree`).
+
+    Returns
+    -------
+    dict[str, pd.DataFrame]
+        "state", "strength" y "atr": paneles fecha × ticker.
+    """
     tickers = list(prices)
 
     if not tickers:
