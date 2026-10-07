@@ -6,7 +6,7 @@ Microestructuras y Sistemas de Trading (IT1731B) · ITESO, Otoño 2026 · **Nive
 
 | Parte | Integrante | Responsabilidad |
 |---|---|---|
-| P0 y P1 | Gonzalo Cano Padilla | Esqueleto, datos, motor de backtesting, auditoría de sesgos, `main.py` |
+| P0 y P1 | Gonzalo Cano Padilla | Esqueleto, datos, motor de backtesting, auditoría de sesgos y `main.py`; revisión final del proyecto, ajustes e integración de las cuatro partes |
 | P2 | Jerónimo Rojas Alvarado | Señales, métricas, optimización y walk-forward |
 | P3 | Juan Manuel Espinosa Cárdenas | Régimen de mercado y figuras |
 | P4 | Raúl Zanatta Casas | Risk Parity, agregación de señales y rebalanceo |
@@ -184,8 +184,8 @@ se usa `np.random.seed` global. Con la misma semilla, `main.py` reproduce los mi
   sobre train, el guardado de resultados y figuras, la estimación de impacto y la tabla de auditoría
   de sesgos generada en `results/auditoria_sesgos.md`. Las decisiones abiertas (unidades del ADV,
   ubicación de la función, dónde vive la auditoría) se confirmaron antes de implementarlas.
-- Revisión integral e integración (2026-10-06): con asistencia de Claude Code se revisaron las cuatro
-  partes contra los SPEC y se hicieron estos cambios.
+- Revisión final del proyecto e integración (2026-10-06): hice la revisión final de las cuatro partes
+  contra los SPEC y los ajustes necesarios, con asistencia de Claude Code. Los cambios fueron estos.
   - Retornos simples en la covarianza de Risk Parity y en las correlaciones (el régimen sigue en
     log-retornos, por aditividad).
   - `sleeve_weights` vectorizado, con caché de w^RP. El resultado es idéntico al anterior y la
