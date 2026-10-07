@@ -79,7 +79,7 @@ CONFIG = {
     "seed": SEED,
     # True solo para la corrida única de test (θ congelados y hash registrado); con False los datos
     # se recortan al fin de validation y test no se toca.
-    "final_run": False,
+    "final_run": True,
     # Datos (SPEC punto 1, CLAUDE.md sección 3)
     "tickers": ["AAPL", "MSFT", "META", "AMD", "XOM", "SMH", "GLD", "COPX"],
     "risk_free_ticker": "^IRX",
