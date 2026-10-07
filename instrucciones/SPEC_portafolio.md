@@ -283,7 +283,10 @@ posición, no consume el armado y no cuenta como operación.]*
 - **Valores iniciales:** frecuencia mensual ("M") y δ = 0.05. Barrido: frecuencia ∈ {semanal,
   mensual, trimestral} y δ ∈ {0, 0.025, 0.05, 0.10, 0.20}, con retorno bruto, costo total, retorno
   neto y turnover en una sola figura. La frecuencia y δ se resuelven con este barrido y no con Optuna.
-- **Decisión de frecuencia y δ:** una sola corrida en validation.
+- **Decisión de frecuencia y δ:** una sola corrida en validation, con el θ final (indicadores en el θ*
+  de train y k, r, m del walk-forward). Regla fijada antes de ver el barrido (2026-10-06): se
+  mantiene mensual con δ = 0.05 salvo que otra combinación dé al menos 1 punto porcentual anual más
+  de retorno neto; si varias lo superan, gana la de menor turnover.
 - **Turnover:** T_t = ½ Σ |w_i,t − w_i,t−|, con w_t− el peso realizado después del drift. En el barrido
   se reporta el turnover anual de los pesos w^RP adoptados (suma de T_t entre los años del bloque).
   Costo anual ≈ turnover anual · 2c, con c = 0.125% + 0.02% por lado (SPEC punto 6).
