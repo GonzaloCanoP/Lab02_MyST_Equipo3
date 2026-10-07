@@ -86,6 +86,12 @@ def test_plot_equity_rejects_too_many_series(equity, config_test):
         plots.plot_equity(curves, block_dates(config_test))
 
 
+def test_plot_strategy_vs_benchmark(equity, config_test):
+    other = equity * 1.1 - 50_000
+    curves = {"Estrategia": equity, "Buy & hold": other, "Buy & hold, ex post": other * 0.9}
+    assert_complete(plots.plot_strategy_vs_benchmark(curves, block_dates(config_test)))
+
+
 def test_plot_drawdown(equity):
     drawdown = equity / equity.cummax() - 1
     assert_complete(plots.plot_drawdown({"Risk Parity": drawdown, "Pesos iguales": drawdown}))
@@ -198,8 +204,8 @@ def test_plot_slices(study):
 
 
 def test_all_figure_functions_are_tested():
-    """Las 16 funciones de la tabla de P3 existen y tienen prueba en este archivo."""
+    """Las 16 funciones de la tabla de P3, más la comparación contra buy & hold, tienen prueba."""
     names = [n for n in dir(plots) if n.startswith("plot_")]
-    assert len(names) == 16
+    assert len(names) == 17
     tested = {n.removeprefix("test_") for n in globals() if n.startswith("test_plot_")}
     assert set(names) <= tested

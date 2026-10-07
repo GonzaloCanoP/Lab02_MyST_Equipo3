@@ -150,6 +150,44 @@ def plot_equity(curves: dict[str, pd.Series], blocks: dict[str, tuple]) -> Figur
     return fig
 
 
+def plot_strategy_vs_benchmark(curves: dict[str, pd.Series], blocks: dict[str, tuple]) -> Figure:
+    """Estrategia contra buy & hold: crecimiento de 100 USD (escala log) y drawdown.
+
+    Parameters
+    ----------
+    curves : dict[str, pd.Series]
+        Nombre → equity por fecha; todas se rebasan a 100 en su primera fecha. Una curva cuyo
+        nombre contiene "ex post" se dibuja punteada (referencia no operable).
+    blocks : dict[str, tuple]
+        Bloques a sombrear (salida de `block_dates`, recortada a las fechas mostradas).
+    """
+    fig = Figure(figsize=(11, 7), layout="constrained")
+    top, bottom = fig.subplots(2, 1, sharex=True, gridspec_kw={"height_ratios": [2, 1]})
+    for (name, (start, end)), shade in zip(blocks.items(), BLOCK_SHADES):
+        for ax in (top, bottom):
+            ax.axvspan(start, end, color=shade, alpha=0.7, linewidth=0,
+                       label=f"Bloque {name}" if ax is top else None)
+    for (name, curve), color in zip(curves.items(), _series_colors(len(curves))):
+        style = "--" if "ex post" in name else "-"
+        growth = 100 * curve / curve.iloc[0]
+        top.plot(growth.index, growth.to_numpy(), color=color, linewidth=1.5, linestyle=style,
+                 label=name)
+        drawdown = (curve / curve.cummax() - 1) * 100
+        bottom.plot(drawdown.index, drawdown.to_numpy(), color=color, linewidth=1.2,
+                    linestyle=style)
+    top.set_yscale("log")
+    for formatter in (top.yaxis.set_major_formatter, top.yaxis.set_minor_formatter):
+        formatter(FuncFormatter(lambda v, _: f"{v:,.0f}"))
+    top.set(title="Crecimiento de 100 USD", xlabel="Fecha", ylabel="Valor (base 100, escala log)")
+    bottom.axhline(0, color=AXIS, linewidth=1)
+    bottom.set(title="Drawdown", xlabel="Fecha", ylabel="Drawdown (%)")
+    for ax in (top, bottom):
+        _style(ax)
+    _figure_legend(fig, top.get_legend_handles_labels()[0])
+    fig.suptitle("Estrategia contra buy & hold", color=INK)
+    return fig
+
+
 def plot_drawdown(drawdowns: dict[str, pd.Series]) -> Figure:
     """Curvas de drawdown.
 

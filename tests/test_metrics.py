@@ -130,3 +130,18 @@ def test_buy_and_hold_equity_by_hand(config_test):
     # X: 500 / (100 · 1.001) = 4.995005 acciones; Y: 500 / (50 · 1.001) = 9.990010 acciones.
     assert equity.iloc[0] == pytest.approx(4.995005 * 110 + 9.990010 * 50, abs=1e-4)
     assert equity.iloc[1] == pytest.approx(4.995005 * 120 + 9.990010 * 40, abs=1e-4)
+
+
+def test_volatility_matched_scales_returns_to_reference_volatility():
+    from src.metrics import volatility_matched
+
+    rng = np.random.default_rng(0)
+    index = pd.bdate_range("2020-01-01", periods=300)
+    equity = pd.Series(100 * np.cumprod(1 + rng.normal(0.001, 0.01, 300)), index=index, name="x")
+    reference = pd.Series(100 * np.cumprod(1 + rng.normal(0, 0.03, 300)), index=index)
+    matched = volatility_matched(equity, reference)
+    assert matched.iloc[0] == equity.iloc[0]
+    assert matched.pct_change().std() == pytest.approx(reference.pct_change().std(), rel=1e-9)
+    # El signo de cada retorno diario se conserva: solo cambia la escala.
+    assert (np.sign(matched.pct_change().dropna()) == np.sign(equity.pct_change().dropna())).all()
+

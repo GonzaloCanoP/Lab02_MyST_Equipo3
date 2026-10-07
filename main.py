@@ -27,6 +27,7 @@ from src.metrics import (
     exposure_metrics,
     metrics_by_block,
     returns_table,
+    volatility_matched,
 )
 from src.optimize import (
     cost_sweep,
@@ -55,6 +56,7 @@ from src.plots import (
     plot_sensitivity,
     plot_signal_heatmap,
     plot_slices,
+    plot_strategy_vs_benchmark,
     plot_surface_3d,
 )
 from src.portfolio import (
@@ -622,6 +624,42 @@ def stage_report(final: dict, prices: dict, rf: pd.Series, regimes: pd.Series, c
     return report
 
 
+def stage_benchmark_comparison(
+    final: dict, prices: dict, rf: pd.Series, blocks: dict, config: dict
+) -> dict:
+    """Estrategia (Risk Parity) contra buy & hold, con y sin el mismo nivel de riesgo.
+
+    Buy & hold compra 1/8 en cada activo en el primer mes fuera de muestra y no rebalancea. La
+    versión "a la volatilidad de la estrategia" escala sus retornos diarios ex post
+    (`volatility_matched`): compara las dos a igual riesgo, pero no es operable.
+    """
+    start = final["first_oos"]
+    end = next(iter(prices.values())).index[-1]
+    strategy = final["portfolios"]["risk_parity"].equity.loc[start:]
+    buy_hold = buy_and_hold_equity(prices, config, start, end)
+    matched = volatility_matched(buy_hold, strategy)
+    curves = {
+        "Estrategia (Risk Parity)": strategy,
+        "Buy & hold": buy_hold,
+        "Buy & hold a la vol. de la estrategia (ex post)": matched,
+    }
+    no_trades = pd.DataFrame(columns=["entry_date", "pnl_net"])
+    rp_trades = final["portfolios"]["risk_parity"].trades
+    ppy = config["periods_per_year"]
+    table = pd.concat(
+        {
+            "Estrategia (Risk Parity)": metrics_by_block(strategy, rp_trades, blocks, rf, ppy),
+            "Buy & hold": metrics_by_block(buy_hold, no_trades, blocks, rf, ppy),
+            "Buy & hold a vol. igual (ex post)": metrics_by_block(matched, no_trades, blocks, rf, ppy),
+        },
+        names=["estrategia", "bloque"],
+    )
+    comparison = {"curves": curves, "metrics": table}
+    save_results(comparison, "comparacion_buy_hold", config)
+    save_figure(plot_strategy_vs_benchmark(curves, blocks), "final_vs_buy_and_hold", config)
+    return comparison
+
+
 def stage_market_impact(result, prices: dict, block: tuple, config: dict) -> dict:
     """Impacto de mercado ex post sobre las operaciones de un bloque (P1, tarea 10).
 
@@ -766,6 +804,7 @@ def main() -> None:
     log("backtests finales y reporte")
     final = stage_final_backtests(prices, regimes, wf, config)
     report = stage_report(final, prices, rf, regimes, config)
+    stage_benchmark_comparison(final, prices, rf, report["blocks"], config)
     block_name = "test" if config["final_run"] else "validation"
     impact = stage_market_impact(
         final["portfolios"]["risk_parity"], prices, report["blocks"][block_name], config

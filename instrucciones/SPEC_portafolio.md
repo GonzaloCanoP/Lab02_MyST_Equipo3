@@ -310,5 +310,5 @@ posición, no consume el armado y no cuenta como operación.]*
 | 0.2 | 2026-10-05 | Sección Portafolio (borrador P4) | Zanatta |
 | 0.3 | 2026-10-06 | Rebalanceo alineado con CONFIG (mensual, δ = 0.05, barrido W/M/Q × δ) y regla de conflictos independiente del orden | Zanatta |
 | 0.4 | 2026-10-06 | Σ de Risk Parity y correlaciones por régimen con retornos simples; las variables de régimen siguen en log-retornos por la aditividad de `efficiency` (sin cambio en la etiqueta) | Cano |
-| 0.6 | 2026-10-06 | Decisiones de validation (corrida única): se quedan Ledoit-Wolf y rebalanceo mensual con δ = 0.05 | Cano (con el equipo) |
 | 0.5 | 2026-10-06 | Decisiones de P4 con evidencia de train: umbral del estimador (10% relativo), m(régimen) 1.0/0.7/0.3 confirmado con la tabla por régimen, umbral de conflictos 0.7 confirmado con la correlación de train, rebalanceo solo de w^RP; acuerdos con P1 cerrados | Cano (con el equipo) |
+| 0.6 | 2026-10-06 | Decisiones de validation (corrida única): se quedan Ledoit-Wolf y rebalanceo mensual con δ = 0.05 | Cano (con el equipo) |

@@ -368,3 +368,18 @@ def buy_and_hold_equity(prices: dict, config: dict, start, end) -> pd.Series:
         shares = budget / (entry * cost_per_share)
         value = value + shares * window["close"]
     return value.rename("buy_and_hold")
+
+
+def volatility_matched(equity: pd.Series, reference: pd.Series) -> pd.Series:
+    """`equity` con sus retornos diarios escalados a la volatilidad de `reference` (ex post).
+
+    Comparación de riesgo igual para el reporte (estrategia contra buy & hold): r' = r · σ_ref / σ,
+    con las σ de toda la muestra mostrada. Usa información de todo el periodo, así que es una
+    referencia ex post y no una estrategia operable.
+    """
+    returns = equity.pct_change(fill_method=None).dropna()
+    target = reference.pct_change(fill_method=None).dropna()
+    scaled = returns * target.std() / returns.std()
+    curve = (1.0 + scaled).cumprod() * equity.iloc[0]
+    return pd.concat([equity.iloc[:1], curve]).rename(f"{equity.name}_vol_igual")
+
