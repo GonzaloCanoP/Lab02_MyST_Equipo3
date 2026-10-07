@@ -1,6 +1,6 @@
 # SPEC de portafolio — Lab 02 · Equipo 3 · Nivel C
 
-**Versión:** 0.5 · **Estado:** Régimen y Portafolio completos y calibrados con train; validation y
+**Versión:** 0.6 · **Estado:** Régimen y Portafolio completos y calibrados con train; validation y
 test sin correr. Toda decisión se toma con train.
 
 Complementa a `SPEC.md`. Las fórmulas base vienen del material del curso "Fundamentos Matemáticos de
@@ -224,6 +224,8 @@ estabilidad de cada uno (desviación estándar del peso de cada activo entre reb
 - **Evidencia en train (2026-10-06):** desviación estándar media del peso entre 48 revisiones
   mensuales: Ledoit-Wolf 0.0230, muestral 0.0275 y EWMA 0.0274. Ledoit-Wolf es el más estable, en
   línea con el candidato inicial.
+- **Resultado en validation (corrida única, 2026-10-06):** Ledoit-Wolf 0.0145, muestral 0.0161 y EWMA
+  0.0162 en 24 revisiones. Ledoit-Wolf vuelve a ser el más estable: **se queda Ledoit-Wolf**.
 
 ### Agregación de señales
 
@@ -287,6 +289,10 @@ posición, no consume el armado y no cuenta como operación.]*
   de train y k, r, m del walk-forward). Regla fijada antes de ver el barrido (2026-10-06): se
   mantiene mensual con δ = 0.05 salvo que otra combinación dé al menos 1 punto porcentual anual más
   de retorno neto; si varias lo superan, gana la de menor turnover.
+- **Resultado en validation (corrida única, 2026-10-06):** M · 0.05 dio −0.39% de retorno neto
+  anual; la mejor combinación (Q · 0.2, −0.20%) lo supera por 0.19 pp, debajo del umbral de 1 pp.
+  **Se mantiene mensual con δ = 0.05.** Las 15 combinaciones quedan entre −0.75% y −0.20%: con
+  `resize_on_rebalance = False` el rebalanceo casi no mueve el resultado, como se esperaba.
 - **Turnover:** T_t = ½ Σ |w_i,t − w_i,t−|, con w_t− el peso realizado después del drift. En el barrido
   se reporta el turnover anual de los pesos w^RP adoptados (suma de T_t entre los años del bloque).
   Costo anual ≈ turnover anual · 2c, con c = 0.125% + 0.02% por lado (SPEC punto 6).
@@ -304,4 +310,5 @@ posición, no consume el armado y no cuenta como operación.]*
 | 0.2 | 2026-10-05 | Sección Portafolio (borrador P4) | Zanatta |
 | 0.3 | 2026-10-06 | Rebalanceo alineado con CONFIG (mensual, δ = 0.05, barrido W/M/Q × δ) y regla de conflictos independiente del orden | Zanatta |
 | 0.4 | 2026-10-06 | Σ de Risk Parity y correlaciones por régimen con retornos simples; las variables de régimen siguen en log-retornos por la aditividad de `efficiency` (sin cambio en la etiqueta) | Cano |
+| 0.6 | 2026-10-06 | Decisiones de validation (corrida única): se quedan Ledoit-Wolf y rebalanceo mensual con δ = 0.05 | Cano (con el equipo) |
 | 0.5 | 2026-10-06 | Decisiones de P4 con evidencia de train: umbral del estimador (10% relativo), m(régimen) 1.0/0.7/0.3 confirmado con la tabla por régimen, umbral de conflictos 0.7 confirmado con la correlación de train, rebalanceo solo de w^RP; acuerdos con P1 cerrados | Cano (con el equipo) |

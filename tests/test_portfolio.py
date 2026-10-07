@@ -728,3 +728,22 @@ def test_sweep_plot_frame_annualizes_and_defines_cost_as_gross_minus_net():
     np.testing.assert_allclose(out["cost"], out["gross_return"] - out["net_return"])
     assert out.loc["M · 0.05", "net_return"] == pytest.approx(0.0)
     np.testing.assert_allclose(out["turnover"], [0.6, 0.3])
+
+def test_choose_estimator_keeps_default_unless_clearly_more_stable():
+    from src.portfolio import choose_estimator
+
+    stability = pd.DataFrame({"mean_std": [0.0230, 0.0215, 0.0275]}, index=["ledoit_wolf", "ewma", "sample"])
+    assert choose_estimator(stability, "ledoit_wolf", 0.10) == "ledoit_wolf"  # 6.5% mejor: no basta
+    stability.loc["ewma", "mean_std"] = 0.0200  # 13% más estable
+    assert choose_estimator(stability, "ledoit_wolf", 0.10) == "ewma"
+
+
+def test_choose_rebalance_keeps_default_unless_clear_gain_then_lowest_turnover():
+    from src.portfolio import choose_rebalance
+
+    frame = pd.DataFrame(
+        {"net_return": [0.020, 0.025, 0.031, 0.032], "turnover": [0.3, 0.1, 0.5, 0.2]},
+        index=["M · 0.05", "Q · 0.1", "W · 0", "W · 0.2"],
+    )
+    assert choose_rebalance(frame.iloc[:2], ("M", 0.05), 0.01) == ("M", 0.05)  # +0.5 pp: no basta
+    assert choose_rebalance(frame, ("M", 0.05), 0.01) == ("W", 0.2)  # dos superan +1 pp: menor turnover

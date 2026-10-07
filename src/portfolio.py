@@ -699,3 +699,39 @@ def sweep_plot_frame(sweep: pd.DataFrame, period: tuple, config: dict) -> pd.Dat
     )
     frame.index = [f"{f} · {b:g}" for f, b in zip(sweep["frequency"], sweep["band"])]
     return frame
+
+def choose_estimator(stability: pd.DataFrame, default: str, min_gain: float) -> str:
+    """Estimador de Σ para la corrida final, con la regla de SPEC_portafolio (Estimador).
+
+    Gana el de menor `mean_std` (salida de `weight_stability` en validation), pero `default`
+    (Ledoit-Wolf) solo se reemplaza si el ganador es al menos `min_gain` (relativo) más estable.
+    """
+    best = stability["mean_std"].idxmin()
+    if stability.loc[best, "mean_std"] <= (1 - min_gain) * stability.loc[default, "mean_std"]:
+        return best
+    return default
+
+
+def choose_rebalance(annualized: pd.DataFrame, default: tuple, min_gain: float) -> tuple:
+    """Frecuencia y δ para la corrida final, con la regla de SPEC_portafolio (Rebalanceo).
+
+    `annualized` es la salida de `sweep_plot_frame` (índice "frecuencia · banda"). Se mantiene
+    `default` = (frecuencia, δ) salvo que otra combinación dé al menos `min_gain` más de retorno
+    neto anual; si varias lo hacen, gana la de menor turnover.
+
+    Returns
+    -------
+    tuple
+        (frecuencia, δ) elegidos.
+    """
+    base = annualized.loc[f"{default[0]} · {default[1]:g}", "net_return"]
+    better = annualized[annualized["net_return"] >= base + min_gain]
+    if better.empty:
+        return default
+    return _split_label(better["turnover"].idxmin())
+
+
+def _split_label(label: str) -> tuple:
+    """"M · 0.05" → ("M", 0.05)."""
+    frequency, band = label.split(" · ")
+    return frequency, float(band)

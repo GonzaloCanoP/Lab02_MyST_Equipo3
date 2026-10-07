@@ -58,10 +58,14 @@ from src.plots import (
     plot_surface_3d,
 )
 from src.portfolio import (
+    choose_estimator,
+    choose_rebalance,
     portfolio_results,
+    rebalance_sweep,
     risk_contribution_plot_frame,
     sleeve_weights,
     sweep_plot_frame,
+    weight_stability,
 )
 from src.regimes import REGIME_NAMES, label_regimes, regime_performance, regime_results
 from src.signals import compute_indicators, generate_signals, sma_macd_vote_correlation
@@ -159,6 +163,10 @@ CONFIG = {
     "rebalance_band": 0.05,  # δ: se adopta el w^RP nuevo solo si ‖Δw‖₁ > δ
     "conflict_corr_threshold": 0.7,  # ρ sobre la que se resuelven señales opuestas
     "resize_on_rebalance": False,  # acordado por P1 y P4
+    # Decisiones de validation (SPEC_portafolio): Ledoit-Wolf se reemplaza solo si otro estimador es
+    # al menos 10% más estable; M y δ = 0.05 se mantienen salvo +1 pp anual de retorno neto
+    "estimator_min_gain": 0.10,
+    "rebalance_min_gain": 0.01,
     # Barridos y robustez
     "sensitivity_pct": 0.20,
     "cost_sweep_bps": list(range(0, 105, 5)),  # ida y vuelta, 0 a 100 bps
@@ -430,6 +438,51 @@ def stage_walk_forward(prices: dict, regimes: pd.Series, plateau: dict, config: 
     }
     save_results(wf, "walk_forward", config)
     return wf
+
+
+def stage_validation_decisions(
+    prices: dict, regimes: pd.Series, wf: dict, plateau: dict, config: dict
+) -> dict:
+    """Corrida única de validation para las decisiones discretas de P4 (SPEC punto 1).
+
+    Estimador de Σ (estabilidad de los pesos) y frecuencia y δ del rebalanceo (barrido con el θ
+    final: indicadores en el θ* de train y k, r, m del walk-forward rolling por régimen), cada uno
+    con la regla fijada antes de verlos. `CONFIG` debe coincidir con lo elegido; si no, la corrida
+    lo avisa y hay que actualizarlo y volver a correr.
+    """
+    validation = block_dates(config)["validation"]
+    stability = weight_stability(prices, config, period=validation)
+    sweep = rebalance_sweep(
+        prices,
+        dict.fromkeys(REGIME_NAMES, plateau),
+        regimes,
+        config,
+        config["rebalance_bands"],
+        config["rebalance_frequencies"],
+        trade_params=wf["runs"][("rolling", True)]["trade_params"].reindex(
+            next(iter(prices.values())).index
+        ),
+        period=validation,
+    )
+    annualized = sweep_plot_frame(sweep, validation, config)
+    decisions = {
+        "weight_stability": stability,
+        "sweep": sweep,
+        "sweep_annualized": annualized,
+        "cov_method": choose_estimator(stability, "ledoit_wolf", config["estimator_min_gain"]),
+        "rebalance": choose_rebalance(
+            annualized,
+            (config["rebalance_frequency"], config["rebalance_band"]),
+            config["rebalance_min_gain"],
+        ),
+    }
+    save_results(decisions, "decisiones_validation", config)
+    save_figure(plot_rebalance_sweep(annualized), "validacion_barrido_rebalanceo", config)
+    chosen = (decisions["cov_method"], *decisions["rebalance"])
+    current = (config["cov_method"], config["rebalance_frequency"], config["rebalance_band"])
+    if chosen != current:
+        log(f"AVISO: validation elige {chosen} y CONFIG usa {current}; actualizar y volver a correr")
+    return decisions
 
 
 def stage_regime_performance(wf: dict, regimes: pd.Series, rf: pd.Series, config: dict) -> dict:
@@ -706,6 +759,8 @@ def main() -> None:
     log("robustez con θ* de la meseta")
     stage_robustness(prices, diagnostics["plateau"], config)
     wf = stage_walk_forward(prices, regimes, diagnostics["plateau"], config)
+    log("decisiones de validation (P4)")
+    stage_validation_decisions(prices, regimes, wf, diagnostics["plateau"], config)
     log("desempeño por régimen")
     stage_regime_performance(wf, regimes, rf, config)
     log("backtests finales y reporte")
