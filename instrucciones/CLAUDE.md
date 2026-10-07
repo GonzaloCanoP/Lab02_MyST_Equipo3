@@ -64,6 +64,7 @@ Lab02_MyST_Equipo3/
 ├── results/                    # salidas de main.py — en .gitignore
 └── docs/
     ├── figuras/                # PNG generados por main.py
+    ├── guia_estudio.md         # guía para estudiar y defender el proyecto
     ├── reporte.pdf
     └── presentacion.pdf
 ```
