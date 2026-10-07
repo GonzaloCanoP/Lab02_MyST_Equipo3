@@ -94,69 +94,91 @@ python -m pytest        # 173 pruebas con datos sintéticos
 Los resultados van a `results/` y las figuras a `docs/figuras/`. Después, `notebooks/resultados.ipynb`
 solo carga esos archivos.
 
-- `CONFIG["final_run"] = False` (por defecto): recorta los datos al fin de validation; test no se
-  toca. Tarda unos 26 minutos con 11 núcleos.
-- `CONFIG["final_run"] = True`: la corrida única con test, después de congelar el código y registrar
-  el commit abajo. Tarda alrededor de una hora.
+- `CONFIG["final_run"] = True` (como quedó congelado): la corrida completa con test. Tarda unos 39
+  minutos con 11 núcleos.
+- `CONFIG["final_run"] = False`: recorta los datos al fin de validation y no toca test (unos 26
+  minutos). Se usó antes de congelar el código, para decidir sin ver test.
 
 Los datos están congelados en `data/`; solo si falta algún archivo se descargan de Yahoo Finance
 (`download_prices`, la única función con red).
 
+## Reporte
+
+El reporte es **`notebooks/resultados.ipynb`**, exportado a PDF. Contiene:
+- datos, estrategia (con la regla 2 de 3 como fórmula) y metodología;
+- los resultados de cada parte, con su justificación;
+- las respuestas a las 7 preguntas del lab, con la advertencia de impacto de mercado;
+- conclusiones y uso de IA.
+
+Para exportarlo, después de `python main.py`:
+
+```bash
+jupyter nbconvert --to notebook --execute --inplace notebooks/resultados.ipynb
+jupyter nbconvert --to pdf notebooks/resultados.ipynb   # o "Export as PDF" desde Jupyter/VS Code
+```
+
 ## Resultados
 
-*Corrida previa (`final_run = False`): train y validation. Test se agrega en la corrida final.*
-
-Backtest continuo con los parámetros del walk-forward rolling por régimen. El bloque train empieza
-en julio de 2018, el primer mes fuera de muestra.
+Backtest continuo fuera de muestra: cada mes opera con los parámetros de su ventana del walk-forward
+rolling por régimen, de julio de 2018 (primer mes fuera de muestra) a septiembre de 2026.
 
 | Estrategia | Bloque | Retorno anual | Volatilidad | Sharpe | Calmar | Max drawdown | Operaciones |
 |---|---|---|---|---|---|---|---|
 | Risk Parity | train | 4.0% | 5.1% | 0.59 | 0.82 | −4.8% | 280 |
-| Risk Parity | validation | −0.4% | 5.8% | −0.65 | −0.06 | −6.2% | 141 |
+| Risk Parity | validation | −0.4% | 5.8% | −0.65 | −0.06 | −6.2% | 145 |
+| Risk Parity | **test** | **0.7%** | **7.2%** | **−0.46** | **0.07** | **−10.7%** | **224** |
 | Pesos iguales | train | 5.1% | 6.5% | 0.65 | 0.89 | −5.7% | 280 |
-| Pesos iguales | validation | −0.4% | 7.4% | −0.50 | −0.06 | −7.7% | 141 |
+| Pesos iguales | validation | −0.4% | 7.4% | −0.50 | −0.06 | −7.7% | 145 |
+| Pesos iguales | test | 0.1% | 8.8% | −0.43 | 0.01 | −14.8% | 224 |
 | Buy & hold | train | 40.0% | 28.8% | 1.28 | 1.32 | −30.3% | — |
 | Buy & hold | validation | 7.8% | 22.9% | 0.29 | 0.31 | −25.1% | — |
+| Buy & hold | test | 38.4% | 23.1% | 1.34 | 1.81 | −21.3% | — |
 
-La estrategia tiene un drawdown mucho menor que buy & hold, pero no muestra ventaja fuera de muestra.
-La eficiencia del walk-forward es 0.14: sobrevive ~14% de la ventaja in-sample. El detalle está en
-`notebooks/resultados.ipynb` y en `docs/figuras/final_vs_buy_and_hold.png`.
+- **Fuera de muestra la estrategia es casi plana:** el capital pasa de 1,000,000 a 1,159,068 USD en
+  8.25 años, mientras buy & hold lo multiplica por 10.
+- **El Sharpe es negativo en validation y test**, porque el retorno no supera al T-Bill (3.5% a 4.3%
+  anual en esos años).
+- **El drawdown es de 2 a 6 veces menor que el de buy & hold**, pero aun a igual volatilidad buy &
+  hold gana en los tres bloques (`docs/figuras/final_vs_buy_and_hold.png`).
 
 ## Respuestas a las preguntas de análisis
 
-Resumen; la versión completa, con tablas y figuras, está al final de `notebooks/resultados.ipynb`.
+Resumen; la versión completa, con tablas y figuras, está en `notebooks/resultados.ipynb`.
 
 1. **2 de 3 contra un indicador:** con el mismo θ* en train, la regla hace 202 operaciones con Calmar
    1.08. MACD solo hace 561 (Calmar −0.07), RSI solo 673 (0.04) y SMA solo 140 (0.30). La
    confirmación recorta entre 64% y 70% las operaciones de MACD y RSI, y mejora el Calmar.
-2. **Degradación en el walk-forward:** la eficiencia es 0.14 en retorno y 0.02 en Calmar. En las
-   ventanas de validation, el Calmar IS mediano es 2.5 y el OOS −0.8. El anchored se degrada menos:
-   6 meses no bastan para estimar los parámetros por régimen.
+2. **Degradación en el walk-forward:** la eficiencia es 0.15 en retorno y 0.03 en Calmar: sobrevive
+   ~15% de la ventaja in-sample. El Calmar mediano por ventana cae de 2.5 IS a −0.8 OOS en
+   validation, y de 3.4 a −0.6 en test. Las otras tres variantes tienen eficiencia negativa.
 3. **Sensibilidad ±20%:** es una meseta moderada, no un pico aislado. La mediana de las 16
    variaciones conserva 91% del Calmar. Lo más sensible son las medias móviles (`sma_slow` ×1.2:
    −0.65 sobre 1.08).
-4. **Costo de equilibrio:** en train la estrategia sigue rentable hasta 100 bps de ida y vuelta, más
-   del triple de los 29 bps del caso base (margen > 71 bps). Fuera de muestra el margen es nulo:
-   validation ya pierde con los costos base.
-5. **Regímenes:** en train hay diferencias claras (Sharpe 1.44 en tendencia, −0.76 en reversión),
-   pero en validation los tres son negativos. La capa de régimen aporta en dos cosas: el θ por
-   régimen le gana al θ único en ambos bloques, y m(crisis) = 0.3 limita la exposición en 2022.
-6. **Risk Parity contra pesos iguales:** no mejora el Calmar (0.82 contra 0.89 en train), pero
-   iguala las contribuciones al riesgo (12.5% cada activo, contra 1.6% a 23.7% con pesos iguales) y
-   reduce el drawdown y la volatilidad. El costo es menor retorno: subpondera la tecnología, que fue
-   lo que más subió.
+4. **Costo de equilibrio:** en train la estrategia sigue rentable hasta 100 bps de ida y vuelta (margen
+   > 71 bps frente a los 29 bps del caso base). Fuera de muestra el equilibrio queda alrededor de los
+   29 bps especificados: el margen es casi nulo.
+5. **Regímenes:** sí difieren, y reversión pierde en los tres bloques (Sharpe −0.76, −2.62 y −1.29).
+   Tendencia gana en train y test (1.44 y 0.45). El θ por régimen le gana al θ único en los tres
+   bloques (en test, +1.8% contra −3.5% anual).
+6. **Risk Parity contra pesos iguales:** mejora el Calmar solo en test (0.07 contra 0.01), pero en
+   los tres bloques reduce el drawdown (16% a 28% menor) y la volatilidad, e iguala las
+   contribuciones al riesgo (12.5% cada activo, contra 1.6% a 23.7% con pesos iguales). El costo es
+   menor retorno en train: subpondera la tecnología, que fue lo que más subió.
 7. **Limitaciones para capital real:**
    - no hay evidencia de edge fuera de muestra;
-   - sesgos de selección del universo: supervivencia, concentración en tecnología y muestra alcista;
+   - sesgos del universo: supervivencia, concentración en tecnología y muestra alcista (los cortos
+     restaron en los tres bloques);
    - ejecución optimista: llenado completo, slippage fijo, sin impacto ni rechazos.
 
 **Advertencia de ejecución:** el backtest asume ejecución completa al precio modelado y no incorpora
 impacto de mercado ni fallas de ejecución. Estimado ex post con el modelo de raíz cuadrada sobre las
-operaciones de validation:
-- 2.3 bps promedio por llenado (p95 de 11.9 bps), equivalente a 0.41% del equity del bloque;
-- COPX concentra el impacto, con 10.8 bps promedio.
+224 operaciones de test:
+- 1.5 bps promedio por llenado (p95 de 6.7 bps);
+- 0.58% del equity del bloque, cerca de 23% de su retorno;
+- COPX concentra el impacto, con 6.8 bps promedio.
 
-El impacto crece con la raíz del tamaño: con 100 veces más capital sería ~10 veces mayor.
+El impacto crece con la raíz del tamaño: con 100 veces más capital sería ~10 veces mayor y borraría
+la ganancia.
 
 ## Semilla
 
@@ -166,8 +188,12 @@ se usa `np.random.seed` global. Con la misma semilla, `main.py` reproduce los mi
 
 ## Commit de la corrida final
 
-*[Pendiente: hash del commit en `main` con el código congelado, registrado antes de correr con
-`final_run = True`. `main.py` también guarda el hash en `results/corrida.pkl`.]*
+**`45bedfaaa0377322fbeffa18387666ccc5b362d6`** (`45bedfa`, en `main`): código congelado con
+`final_run = True`, registrado antes de correr test. La corrida única con test terminó el 2026-10-06 a
+las 19:05 (38.7 min) y `results/corrida.pkl` guarda ese mismo hash. Ese archivo marca
+`uncommitted_changes = True` solo porque las figuras que la propia corrida escribió en
+`docs/figuras/` todavía no estaban en git; ningún archivo con seguimiento cambió. Los commits
+posteriores solo agregan figuras, notebooks ejecutados y documentación.
 
 ## Uso de IA
 

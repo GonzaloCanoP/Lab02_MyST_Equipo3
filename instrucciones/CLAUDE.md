@@ -30,8 +30,8 @@ Nunca resuelvas una decisión abierta en silencio.
 Integrantes: Gonzalo Cano Padilla, Juan Manuel Espinosa Cárdenas, Jerónimo Rojas Alvarado y Raúl
 Zanatta Casas. Asignación confirmada el 2026-10-06 (tabla de arriba).
 
-Cada integrante aporta 2 de los 8 activos y escribe en el reporte la descripción de la estrategia de
-sus 2 activos.
+Los 8 activos se eligieron en conjunto entre los cuatro integrantes; no hay reparto de activos por
+integrante. El reporte es `notebooks/resultados.ipynb` exportado a PDF.
 
 ## 2. Estructura del repositorio
 
@@ -338,12 +338,12 @@ Todas usan datos sintéticos con semilla fija. Ninguna lee `data/` ni usa red. S
 | P3 | Análisis de régimen: comparación de los tres métodos, elección, validación, métricas por régimen, θ por régimen contra θ único | 5 |
 | P4 | Risk Parity, estimadores de covarianza, agregación, rebalanceo y turnover; Risk Parity contra pesos iguales y contra activos individuales | 6 |
 
-Todos: descripción de la estrategia en sus 2 activos. Presentación: máximo 12 diapositivas, unas 3 por
+Reporte: `notebooks/resultados.ipynb` exportado a PDF, con las secciones de arriba. Presentación: máximo 12 diapositivas, unas 3 por
 integrante.
 
 ## 14. PENDIENTE DE CONFIRMAR
 
-1. ~~Los 8 tickers y el formato de `data/`~~ RESUELTO (sección 3). Falta el reparto de 2 por integrante.
+1. ~~Los 8 tickers y el formato de `data/`~~ RESUELTO (sección 3). Los activos se eligieron en conjunto; no hay reparto por integrante.
 2. ~~Versión de Python, que se fija en P0.~~ RESUELTO: Python 3.13.9 (venv en `.venv/`).
 3. Todo lo marcado como pendiente en `SPEC_portafolio.md`, que P3 y P4 completan como primera tarea.
 4. Si el rebalanceo redimensiona posiciones abiertas (`resize_on_rebalance`). Lo deciden P4 y P1.

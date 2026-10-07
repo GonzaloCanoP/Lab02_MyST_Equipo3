@@ -8,7 +8,7 @@ de correr cualquier backtest; train, validation y test no se han observado. El d
 agregación y rebalanceo va en `SPEC_portafolio.md`.
 
 ## 1. Universe and frequency
-- **Activos:** 8 activos líquidos de EE.UU. (2 por integrante), listados antes de 2016 y con historia
+- **Activos:** 8 activos líquidos de EE.UU., elegidos en conjunto por los 4 integrantes, listados antes de 2016 y con historia
   completa y traslapada. Datos en `data/`.
 
 | Ticker | Activo | Tipo | Cotiza desde |
@@ -22,7 +22,9 @@ agregación y rebalanceo va en `SPEC_portafolio.md`.
 | GLD | SPDR Gold Shares | ETF | 2004 |
 | COPX | Global X Copper Miners ETF | ETF | 2010 |
 
-  Reparto por integrante: *[PENDIENTE]*. Tasa libre de riesgo: `^IRX` (T-Bill a 13 semanas).
+  Selección: los cuatro integrantes eligieron los 8 activos en conjunto, con criterios comunes (liquidez,
+  historia completa y diversificación entre tecnología, semiconductores, energía, oro y cobre); no hay
+  reparto por integrante. Tasa libre de riesgo: `^IRX` (T-Bill a 13 semanas).
   Sesgo de supervivencia: la lista se eligió en 2026 entre activos que sobrevivieron hasta hoy; se
   declara en el reporte. Concentración declarada: AAPL, MSFT, META, AMD y SMH son tecnología
   (SMH contiene a AMD), así que se espera correlación alta entre ellos; Risk Parity la penaliza.
